@@ -53,6 +53,8 @@ You need the matching key in inventory to lock or unlock.
 say <text>           or  'text
 emote <text>         or  :text
 ask <who> about <topic>
+talk <who>            list topics they might know
+list / buy / sell     if someone in the room has a shop
 ```
 
 ## Fighting

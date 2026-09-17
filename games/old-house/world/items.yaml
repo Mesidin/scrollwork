@@ -17,6 +17,22 @@
   takeable: true
   wearable: true
   slot: body
+  armor:
+    soak: 1
+  value: 4
+
+- id: house.knife
+  keywords: [knife, blade]
+  name: kitchen knife
+  short: a kitchen knife
+  long: The edge is dull but it is still a pointy stick with manners.
+  takeable: true
+  wearable: true
+  slot: wield
+  weapon:
+    damage: 1d6+1
+    verb: stab
+  value: 3
 
 - id: house.cellar-key
   keywords: [key, brass, cellar]

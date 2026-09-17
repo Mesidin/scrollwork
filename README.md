@@ -18,6 +18,8 @@ go build -o sudengine ./cmd/sudengine
 ./sudengine play old-house  # sample pack
 ./sudengine build old-house # in-engine workshop
 ./sudengine new mygame      # blank pack under games/mygame
+./sudengine validate old-house
+./sudengine install path/to/pack.zip
 ```
 
 Packs live in `games/<id>/`. Snapshots live in `saves/<pack-id>/` (gitignored).
@@ -97,13 +99,10 @@ Default styles are ANSI-16 (follow the terminal, including Omarchy retints). Opt
 
 Rough order, not a promise:
 
-1. **Packs as products** — zip/install a folder; validate YAML with useful errors; keep Old House as the regression pack.
-2. **Builder** — multiline `desc`, edit extras/AI/use from OLC, don’t clobber Lua or comments more than we have to.
-3. **Play loop** — weapons/armor in the damage pipeline, combat grammar, corpse/loot rules in data, shops/dialogue beyond `ask`.
-4. **Character** — persist origin/role on the player; `stats` should show what you picked.
-5. **CI** — `go test` on push.
-6. **Multiplayer** — listen on the existing session protocol; accounts later.
-7. **Name** — keep protocol/pack keys generic so “Erickson Stories” vs `sudengine` is a display/module change, not a content rewrite.
+1. **CI** — `go test` on push.
+2. **Multiplayer** — listen on the existing session protocol; accounts later.
+3. **Name** — keep protocol/pack keys generic so “Erickson Stories” vs `sudengine` is a display/module change, not a content rewrite.
+4. **Richer OLC** — comment-preserving YAML; shops in the sample pack if a story wants one.
 
 ## Docs map
 

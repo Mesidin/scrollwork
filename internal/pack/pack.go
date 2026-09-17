@@ -116,6 +116,9 @@ type ItemYAML struct {
 	Locked    bool             `yaml:"locked"`
 	Key       string           `yaml:"key"`
 	Use       *world.UseEffect `yaml:"use"`
+	Weapon    *world.Weapon    `yaml:"weapon"`
+	Armor     *world.Armor     `yaml:"armor"`
+	Value     int              `yaml:"value"`
 	Flags     []string         `yaml:"flags"`
 	Scripts   string           `yaml:"scripts"`
 	Contains  []string         `yaml:"contains"`
@@ -135,6 +138,7 @@ type NPCYAML struct {
 	Flags     []string                  `yaml:"flags"`
 	Tags      []string                  `yaml:"tags"`
 	Scripts   string                    `yaml:"scripts"`
+	Shop      *world.Shop               `yaml:"shop"`
 }
 
 type Pack struct {
@@ -364,8 +368,16 @@ func (p *Pack) Instantiate() (*world.World, error) {
 			}
 		}
 		for _, id := range r.NPCs {
-			if _, err := w.Spawn(world.ID(id), roomID); err != nil {
+			mob, err := w.Spawn(world.ID(id), roomID)
+			if err != nil {
 				return nil, fmt.Errorf("room %s npc %s: %w", r.ID, id, err)
+			}
+			if mob.Shop != nil {
+				for _, sid := range mob.Shop.Stock {
+					if _, err := w.Spawn(world.ID(sid), mob.ID); err != nil {
+						return nil, fmt.Errorf("npc %s stock %s: %w", id, sid, err)
+					}
+				}
 			}
 		}
 	}
@@ -403,9 +415,13 @@ func SpawnPlayer(w *world.World, p *Pack, name, raceID, roleID string) *world.En
 	rpg.ApplyDefaults(e, p.RPG)
 	if b := p.RPG.Bundle(p.RPG.Races, raceID); b != nil {
 		rpg.ApplyBundle(e, *b)
+		e.OriginID = b.ID
+		e.OriginName = b.Name
 	}
 	if b := p.RPG.Bundle(p.RPG.Roles, roleID); b != nil {
 		rpg.ApplyBundle(e, *b)
+		e.RoleID = b.ID
+		e.RoleName = b.Name
 	}
 	if e.Combat == nil {
 		e.Combat = &world.Combat{
@@ -441,6 +457,9 @@ func itemFromYAML(it ItemYAML) *world.Entity {
 		Locked:    it.Locked,
 		Key:       it.Key,
 		Use:       it.Use,
+		Weapon:    it.Weapon,
+		Armor:     it.Armor,
+		Value:     it.Value,
 		Scripts:   it.Scripts,
 		Flags:     map[string]bool{},
 	}
@@ -468,6 +487,7 @@ func npcFromYAML(n NPCYAML) *world.Entity {
 		Resources: n.Resources,
 		Tags:      n.Tags,
 		Scripts:   n.Scripts,
+		Shop:      n.Shop,
 		Flags:     map[string]bool{},
 		Takeable:  false,
 	}
@@ -600,6 +620,15 @@ func defaultBlankArt(id string) string {
 }
 
 func (p *Pack) Write() error {
+	return p.write(true)
+}
+
+// WriteWorld writes pack + world YAML. It does not rewrite help, intro art, or Lua.
+func (p *Pack) WriteWorld() error {
+	return p.write(false)
+}
+
+func (p *Pack) write(all bool) error {
 	dir := p.Dir
 	dirs := []string{
 		dir,
@@ -636,22 +665,24 @@ func (p *Pack) Write() error {
 			return err
 		}
 	}
-	for k, body := range p.Help {
-		name := k + ".md"
-		if err := os.WriteFile(filepath.Join(dir, "help", name), []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
-			return err
+	if all {
+		for k, body := range p.Help {
+			name := k + ".md"
+			if err := os.WriteFile(filepath.Join(dir, "help", name), []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+				return err
+			}
+		}
+		if p.IntroArt != "" {
+			artName := p.Meta.Intro.Art
+			if artName == "" {
+				artName = "intro.txt"
+			}
+			if err := os.WriteFile(filepath.Join(dir, artName), []byte(p.IntroArt+"\n"), 0o644); err != nil {
+				return err
+			}
 		}
 	}
-	if p.IntroArt != "" {
-		artName := p.Meta.Intro.Art
-		if artName == "" {
-			artName = "intro.txt"
-		}
-		if err := os.WriteFile(filepath.Join(dir, artName), []byte(p.IntroArt+"\n"), 0o644); err != nil {
-			return err
-		}
-	}
-	// Lua files are never rewritten here.
+	// Lua files are never rewritten.
 	return nil
 }
 
@@ -759,6 +790,9 @@ func (p *Pack) SyncFromWorld(w *world.World) {
 			Locked:    e.Locked,
 			Key:       e.Key,
 			Use:       e.Use,
+			Weapon:    e.Weapon,
+			Armor:     e.Armor,
+			Value:     e.Value,
 			Flags:     flagList(e),
 			Scripts:   e.Scripts,
 		})
@@ -779,6 +813,7 @@ func (p *Pack) SyncFromWorld(w *world.World) {
 			Flags:     flagList(e),
 			Tags:      e.Tags,
 			Scripts:   e.Scripts,
+			Shop:      e.Shop,
 		})
 	}
 }

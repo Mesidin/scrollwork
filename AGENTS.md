@@ -88,14 +88,10 @@ Never put Old House fiction, Grit/Calm labels, or room text in Go. Those belong 
 ## Gaps (not implemented — don’t assume they exist)
 
 - CI on push (run `go test ./...` locally).
-- Weapons/armor in the damage pipeline (until that lands).
-- Weapons/armor in the damage pipeline.
-- Multiline OLC descriptions; rich proto editors.
-- Shops, currency, crafting.
+- Crafting, weather, economy beyond a shop NPC.
 - Networked multiplayer.
-- Pack zip distribution.
-- Character origin/role stored on the player for `stats`.
 - Infocom-style parser.
+- YAML comment preservation on `save pack` (help/intro/Lua are left alone).
 
 ## In-game docs vs this file
 

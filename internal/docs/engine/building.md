@@ -107,17 +107,24 @@ Sandbox: no `io` or `os`. Hooks: `on_look`, `on_use`, `on_ask`, `on_enter`, `on_
 ```
 dig north Kitchen     create + link + walk
 buildwalk             walking into a void digs
-name / desc / rflags
+name <title>
+desc                  then type lines, end with .
+desc <one line>
+rflags dark
+extra add portrait | The eyes follow you.
+ai rat aggressive
+iset lamp use light
+iset knife damage 1d6+1
 proto item lamp a brass lamp
 proto npc rat a rat
 spawn rat
 goto house.foyer
 rooms
-save pack             write YAML back to disk
+save pack             write world YAML (not help, intro, or Lua)
 reload                reread Lua
 ```
 
-`save pack` may drop comments in YAML. Lua files are never rewritten.
+`save pack` rewrites world YAML (comments in those files may be lost). It does not rewrite `help/`, `intro.txt`, or Lua.
 
 ## Check your work
 

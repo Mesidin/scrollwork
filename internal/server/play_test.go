@@ -50,6 +50,10 @@ func TestOldHousePlaythrough(t *testing.T) {
 		t.Fatalf("expected maid:\n%s", out)
 	}
 
+	out = texts(srv.HandleLine("talk maid"))
+	if !strings.Contains(strings.ToLower(out), "key") {
+		t.Fatalf("talk maid should list topics:\n%s", out)
+	}
 	out = texts(srv.HandleLine("ask maid about key"))
 	if !strings.Contains(strings.ToLower(out), "parlor") {
 		t.Fatalf("maid should mention parlor:\n%s", out)
@@ -153,6 +157,13 @@ func TestChargenRole(t *testing.T) {
 	}
 	if pl.Res("hp").Max != 30 {
 		t.Fatalf("reckless grit max %d", pl.Res("hp").Max)
+	}
+	if pl.RoleName != "Reckless" {
+		t.Fatalf("role %q", pl.RoleName)
+	}
+	out := texts(srv.HandleLine("stats"))
+	if !strings.Contains(out, "Reckless") {
+		t.Fatalf("stats should show role:\n%s", out)
 	}
 }
 

@@ -69,7 +69,58 @@ type Schema struct {
 	Slots           []string   `yaml:"slots"`
 	PrimaryResource string     `yaml:"primary_resource"`
 	Chargen         Chargen    `yaml:"chargen"`
+	Death           Death      `yaml:"death"`
 	Abilities       []Ability  `yaml:"-"`
+}
+
+type Death struct {
+	NPC    DeathNPC    `yaml:"npc"`
+	Player DeathPlayer `yaml:"player"`
+}
+
+type DeathNPC struct {
+	Corpse        *bool `yaml:"corpse"`
+	DropInventory *bool `yaml:"drop_inventory"`
+}
+
+type DeathPlayer struct {
+	PrimaryPct *int  `yaml:"primary_pct"`
+	KeepItems  *bool `yaml:"keep_items"`
+}
+
+func (d Death) NPCCorpse() bool {
+	if d.NPC.Corpse == nil {
+		return true
+	}
+	return *d.NPC.Corpse
+}
+
+func (d Death) NPCDrop() bool {
+	if d.NPC.DropInventory == nil {
+		return true
+	}
+	return *d.NPC.DropInventory
+}
+
+func (d Death) PlayerPct() int {
+	if d.Player.PrimaryPct == nil {
+		return 50
+	}
+	n := *d.Player.PrimaryPct
+	if n < 0 {
+		return 0
+	}
+	if n > 100 {
+		return 100
+	}
+	return n
+}
+
+func (d Death) PlayerKeepItems() bool {
+	if d.Player.KeepItems == nil {
+		return true
+	}
+	return *d.Player.KeepItems
 }
 
 func (s Schema) ChargenEnabled() bool {

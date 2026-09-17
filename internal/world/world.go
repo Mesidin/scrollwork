@@ -59,6 +59,21 @@ type UseEffect struct {
 	MessageOff string `json:"message_off,omitempty" yaml:"message_off,omitempty"`
 }
 
+type Weapon struct {
+	Damage string `json:"damage,omitempty" yaml:"damage,omitempty"`
+	Verb   string `json:"verb,omitempty" yaml:"verb,omitempty"`
+}
+
+type Armor struct {
+	Soak int `json:"soak,omitempty" yaml:"soak,omitempty"`
+}
+
+type Shop struct {
+	Currency string   `json:"currency,omitempty" yaml:"currency,omitempty"`
+	Markup   int      `json:"markup,omitempty" yaml:"markup,omitempty"` // percent added when player buys
+	Stock    []string `json:"stock,omitempty" yaml:"stock,omitempty"`
+}
+
 type Entity struct {
 	ID          ID       `json:"id" yaml:"id"`
 	PrototypeID ID       `json:"prototype_id,omitempty" yaml:"prototype_id,omitempty"`
@@ -84,6 +99,9 @@ type Entity struct {
 	Locked    bool       `json:"item_locked,omitempty" yaml:"item_locked,omitempty"`
 	Key       string     `json:"item_key,omitempty" yaml:"item_key,omitempty"`
 	Use       *UseEffect `json:"use,omitempty" yaml:"use,omitempty"`
+	Weapon    *Weapon    `json:"weapon,omitempty" yaml:"weapon,omitempty"`
+	Armor     *Armor     `json:"armor,omitempty" yaml:"armor,omitempty"`
+	Value     int        `json:"value,omitempty" yaml:"value,omitempty"`
 
 	AI     *AI               `json:"ai,omitempty" yaml:"ai,omitempty"`
 	Combat *Combat           `json:"combat,omitempty" yaml:"combat,omitempty"`
@@ -98,6 +116,12 @@ type Entity struct {
 	Cooldown  map[string]int64    `json:"cooldown,omitempty" yaml:"cooldown,omitempty"`
 
 	Scripts string `json:"scripts,omitempty" yaml:"scripts,omitempty"`
+	Shop    *Shop  `json:"shop,omitempty" yaml:"shop,omitempty"`
+
+	OriginID   string `json:"origin_id,omitempty" yaml:"origin_id,omitempty"`
+	OriginName string `json:"origin_name,omitempty" yaml:"origin_name,omitempty"`
+	RoleID     string `json:"role_id,omitempty" yaml:"role_id,omitempty"`
+	RoleName   string `json:"role_name,omitempty" yaml:"role_name,omitempty"`
 }
 
 type World struct {
@@ -295,6 +319,19 @@ func (e *Entity) Clone() *Entity {
 	if e.Use != nil {
 		u := *e.Use
 		cp.Use = &u
+	}
+	if e.Weapon != nil {
+		w := *e.Weapon
+		cp.Weapon = &w
+	}
+	if e.Armor != nil {
+		a := *e.Armor
+		cp.Armor = &a
+	}
+	if e.Shop != nil {
+		s := *e.Shop
+		s.Stock = append([]string{}, e.Shop.Stock...)
+		cp.Shop = &s
 	}
 	cp.Contents = append([]ID{}, e.Contents...)
 	return &cp

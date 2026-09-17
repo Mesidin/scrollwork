@@ -8,6 +8,7 @@ inventory
 use lamp
 light lamp          same as use
 wear coat
+wear knife            wield slot; combat uses its damage
 remove coat
 drop lamp
 put lamp in chest

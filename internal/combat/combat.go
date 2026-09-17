@@ -91,18 +91,18 @@ func (e *Engine) swing(w *world.World, att, def *world.Entity) {
 	if primary == "" {
 		primary = "hp"
 	}
-	atk := att.Combat.Attacks[0]
-	if len(att.Combat.Attacks) > 1 {
-		atk = att.Combat.Attacks[e.RNG.Intn(len(att.Combat.Attacks))]
-	}
+	atk := attackOf(w, att, e)
 	dmg := dice.MustRoll(e.RNG, atk.Damage)
+	soak := armorSoak(w, def)
+	dmg -= soak
 	if dmg < 1 {
 		dmg = 1
 	}
 	def.AdjustRes(primary, -dmg)
-	msgAtt := fmt.Sprintf("You %s %s for %d.", atk.Name, def.Display(), dmg)
-	msgDef := fmt.Sprintf("%s %ss you for %d.", att.CapDisplay(), atk.Name, dmg)
-	msgRoom := fmt.Sprintf("%s %ss %s.", att.CapDisplay(), atk.Name, def.Display())
+	verb := atk.Name
+	msgAtt := fmt.Sprintf("You %s %s for %d.", verb, def.Display(), dmg)
+	msgDef := fmt.Sprintf("%s %s you for %d.", att.CapDisplay(), ThirdPerson(verb), dmg)
+	msgRoom := fmt.Sprintf("%s %s %s.", att.CapDisplay(), ThirdPerson(verb), def.Display())
 	if e.Emit != nil {
 		if att.Kind == world.KindPlayer {
 			e.Emit(att, "narrative", msgAtt)
@@ -143,4 +143,39 @@ func (e *Engine) Damage(w *world.World, att, def *world.Entity, amount int, verb
 		e.Stop(att)
 		e.Stop(def)
 	}
+}
+
+func attackOf(w *world.World, att *world.Entity, e *Engine) world.Attack {
+	if att.Equipment != nil {
+		if id, ok := att.Equipment["wield"]; ok {
+			if it := w.Get(id); it != nil && it.Weapon != nil && it.Weapon.Damage != "" {
+				verb := it.Weapon.Verb
+				if verb == "" {
+					verb = "hit"
+				}
+				return world.Attack{Name: verb, Damage: it.Weapon.Damage}
+			}
+		}
+	}
+	if att.Combat != nil && len(att.Combat.Attacks) > 0 {
+		atks := att.Combat.Attacks
+		if len(atks) > 1 && e.RNG != nil {
+			return atks[e.RNG.Intn(len(atks))]
+		}
+		return atks[0]
+	}
+	return world.Attack{Name: "hit", Damage: "1d4"}
+}
+
+func armorSoak(w *world.World, def *world.Entity) int {
+	if def.Equipment == nil {
+		return 0
+	}
+	n := 0
+	for _, id := range def.Equipment {
+		if it := w.Get(id); it != nil && it.Armor != nil {
+			n += it.Armor.Soak
+		}
+	}
+	return n
 }

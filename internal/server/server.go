@@ -19,6 +19,11 @@ import (
 	"sudengine/internal/world"
 )
 
+type capture struct {
+	buf  []string
+	done func(text string)
+}
+
 type Session struct {
 	ID        string
 	Mode      protocol.Mode
@@ -27,6 +32,7 @@ type Session struct {
 	In        chan string
 	BuildWalk bool
 	quit      bool
+	cap       *capture
 }
 
 func (s *Session) Send(ev protocol.Event) {
@@ -62,6 +68,11 @@ func Launch(opt Options) (*Server, *Session, error) {
 		return nil, nil, err
 	}
 	var w *world.World
+	if opt.Mode != protocol.ModeBuild {
+		if err := p.Validate(); err != nil {
+			return nil, nil, err
+		}
+	}
 	if opt.Slot != "" {
 		w, err = save.Read(p.Meta.ID, opt.Slot)
 		if err != nil {
@@ -172,7 +183,7 @@ func (s *Server) greet() {
 	if s.Session.Mode == protocol.ModePlay {
 		commands.DescribeRoom(s.ctx(), true)
 	} else {
-		s.Session.Send(protocol.TextEvent{Channel: protocol.ChanBuild, Text: "Builder mode. Try: dig north Kitchen, desc, spawn, proto, save pack."})
+		s.Session.Send(protocol.TextEvent{Channel: protocol.ChanBuild, Text: "Builder mode. Try: dig, desc, extra, ai, iset, spawn, proto, save pack. help building"})
 		commands.DescribeRoom(s.ctx(), true)
 	}
 }
@@ -207,7 +218,10 @@ func (s *Server) ctx() *commands.Context {
 		},
 		SavePack: func() error {
 			s.Pack.SyncFromWorld(s.World)
-			return s.Pack.Write()
+			return s.Pack.WriteWorld()
+		},
+		BeginCapture: func(done func(text string)) {
+			sess.cap = &capture{done: done}
 		},
 		ReloadScripts: func() error {
 			p, err := pack.Load(s.Pack.Dir)
@@ -230,6 +244,20 @@ func (s *Server) ctx() *commands.Context {
 }
 
 func (s *Server) handle(line string) {
+	if s.Session.cap != nil {
+		if strings.TrimSpace(line) == "." {
+			text := strings.Join(s.Session.cap.buf, "\n")
+			done := s.Session.cap.done
+			s.Session.cap = nil
+			if done != nil {
+				done(text)
+			}
+			s.pushUI()
+			return
+		}
+		s.Session.cap.buf = append(s.Session.cap.buf, line)
+		return
+	}
 	line = strings.TrimSpace(line)
 	c := s.ctx()
 	if line == "" {
@@ -410,28 +438,45 @@ func (s *Server) reapDead() {
 		room := s.World.RoomOf(e)
 		_, _ = s.Scripts.Call("on_death", player, e)
 		if room != nil {
-			corpse := &world.Entity{
-				ID:       world.ID(fmt.Sprintf("corpse-%s", e.ID)),
-				Kind:     world.KindItem,
-				Name:     "corpse of " + e.Name,
-				Short:    "the corpse of " + e.Display(),
-				Long:     "It's dead.",
-				Keywords: []string{"corpse"},
-				Takeable: true,
+			if s.Pack.RPG.Death.NPCDrop() {
+				for _, c := range append([]world.ID{}, e.Contents...) {
+					_ = s.World.Move(c, room.ID)
+				}
 			}
-			s.World.Add(corpse)
-			_ = s.World.Move(corpse.ID, room.ID)
-			for _, c := range append([]world.ID{}, e.Contents...) {
-				_ = s.World.Move(c, room.ID)
+			if s.Pack.RPG.Death.NPCCorpse() {
+				corpse := &world.Entity{
+					ID:       world.ID(fmt.Sprintf("corpse-%s", e.ID)),
+					Kind:     world.KindItem,
+					Name:     "corpse of " + e.Name,
+					Short:    "the corpse of " + e.Display(),
+					Long:     "It's dead.",
+					Keywords: []string{"corpse"},
+					Takeable: true,
+				}
+				s.World.Add(corpse)
+				_ = s.World.Move(corpse.ID, room.ID)
 			}
 		}
 		s.World.Destroy(id)
 	}
 	if player != nil && !player.Alive(primary) {
-		s.Session.Send(protocol.TextEvent{Channel: protocol.ChanCombat, Text: "You die. The world fades... then you wake at the start."})
-		player.SetRes(primary, world.Resource{Current: player.Res(primary).Max / 2, Max: player.Res(primary).Max})
+		s.Session.Send(protocol.TextEvent{Channel: protocol.ChanAlert, Text: "You die. The world fades... then you wake at the start."})
+		pct := s.Pack.RPG.Death.PlayerPct()
+		max := player.Res(primary).Max
+		player.SetRes(primary, world.Resource{Current: max * pct / 100, Max: max})
+		if player.Res(primary).Current < 1 && max > 0 {
+			player.SetRes(primary, world.Resource{Current: 1, Max: max})
+		}
 		if player.Combat != nil {
 			player.Combat.Target = ""
+		}
+		if !s.Pack.RPG.Death.PlayerKeepItems() {
+			room := s.World.RoomOf(player)
+			if room != nil {
+				for _, it := range append([]*world.Entity{}, s.World.Children(player.ID)...) {
+					_ = s.World.Move(it.ID, room.ID)
+				}
+			}
 		}
 		if s.World.StartRoom != "" {
 			_ = s.World.Move(player.ID, s.World.StartRoom)

@@ -75,7 +75,7 @@
   y: 0
   z: 0
   flags: [indoor]
-  items: [house.lamp]
+  items: [house.lamp, house.knife]
   extras:
     - keywords: [stove]
       name: an iron stove

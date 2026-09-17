@@ -21,6 +21,12 @@ func Lookup(verb string) commands.Handler {
 		return name
 	case "rflags":
 		return rflags
+	case "extra":
+		return extra
+	case "ai":
+		return setAI
+	case "iset":
+		return iset
 	case "spawn":
 		return spawn
 	case "place":
@@ -125,13 +131,228 @@ func buildwalk(c *commands.Context, p commands.Parsed) {
 
 func desc(c *commands.Context, p commands.Parsed) {
 	room := c.World.RoomOf(c.Actor)
+	if room == nil {
+		c.Print("You aren't in a room.")
+		return
+	}
 	if p.Rest == "" {
 		c.Print("Current desc:\n%s", room.Long)
-		c.Print("Usage: desc <text>")
+		c.Print("Type the new description. End with a line containing only .")
+		if c.BeginCapture == nil {
+			c.Print("Or: desc <one line>")
+			return
+		}
+		c.BeginCapture(func(text string) {
+			room.Long = strings.TrimSpace(text)
+			c.Tell(protocol.ChanBuild, "Description set.")
+		})
 		return
 	}
 	room.Long = p.Rest
 	c.Tell(protocol.ChanBuild, "Description set.")
+}
+
+func extra(c *commands.Context, p commands.Parsed) {
+	room := c.World.RoomOf(c.Actor)
+	if room == nil {
+		c.Print("You aren't in a room.")
+		return
+	}
+	args := p.Args
+	if len(args) == 0 || strings.EqualFold(args[0], "list") {
+		c.Print("Extras in this room:")
+		n := 0
+		for _, e := range c.World.Children(room.ID) {
+			if e.Kind == world.KindScenery {
+				c.Print("  %s  (%s)", e.Display(), strings.Join(e.Keywords, ", "))
+				n++
+			}
+		}
+		if n == 0 {
+			c.Print("  (none)")
+		}
+		c.Print("Usage: extra add <keywords> | <look text>")
+		return
+	}
+	if !strings.EqualFold(args[0], "add") {
+		c.Print("extra list | extra add <keywords> | <look text>")
+		return
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(p.Rest, p.Args[0]))
+	kw, text, ok := strings.Cut(rest, "|")
+	if !ok {
+		c.Print("extra add <keywords> | <look text>")
+		return
+	}
+	kws := strings.Fields(strings.ToLower(kw))
+	text = strings.TrimSpace(text)
+	if len(kws) == 0 || text == "" {
+		c.Print("extra add <keywords> | <look text>")
+		return
+	}
+	id := world.ID(fmt.Sprintf("%s.scenery.%s", room.ID, world.Slug(kws[0])))
+	n := 2
+	base := id
+	for c.World.Get(id) != nil {
+		id = world.ID(fmt.Sprintf("%s-%d", base, n))
+		n++
+	}
+	e := &world.Entity{
+		ID:       id,
+		Kind:     world.KindScenery,
+		Keywords: kws,
+		Name:     kws[0],
+		Short:    kws[0],
+		Long:     text,
+		Takeable: false,
+	}
+	c.World.Add(e)
+	_ = c.World.Move(e.ID, room.ID)
+	c.Tell(protocol.ChanBuild, fmt.Sprintf("Added extra %q.", kws[0]))
+}
+
+func setAI(c *commands.Context, p commands.Parsed) {
+	if p.Rest == "" {
+		c.Print("ai [target] <sentinel|wander|aggressive|coward>")
+		return
+	}
+	profile := strings.ToLower(p.Args[len(p.Args)-1])
+	switch profile {
+	case "sentinel", "wander", "aggressive", "coward":
+	default:
+		c.Print("Profiles: sentinel, wander, aggressive, coward")
+		return
+	}
+	var mob *world.Entity
+	var err error
+	if len(p.Args) >= 2 {
+		token := strings.Join(p.Args[:len(p.Args)-1], " ")
+		mob, err = findBuildTarget(c, token, world.KindMobile)
+		if err != nil {
+			c.Print("%s", err.Error())
+			return
+		}
+	} else {
+		mob = onlyMobile(c)
+		if mob == nil {
+			c.Print("ai <target> %s", profile)
+			return
+		}
+	}
+	if mob.AI == nil {
+		mob.AI = &world.AI{}
+	}
+	mob.AI.Profile = profile
+	mob.AI.Wander = profile == "wander" || profile == "aggressive"
+	if proto := c.World.Protos[mob.PrototypeID]; proto != nil {
+		if proto.AI == nil {
+			proto.AI = &world.AI{}
+		}
+		proto.AI.Profile = profile
+		proto.AI.Wander = mob.AI.Wander
+	}
+	c.Tell(protocol.ChanBuild, fmt.Sprintf("%s AI = %s", mob.Display(), profile))
+}
+
+func iset(c *commands.Context, p commands.Parsed) {
+	if len(p.Args) < 2 {
+		c.Print("iset <item> use <flag> | iset <item> damage <dice> | iset <item> value <n>")
+		return
+	}
+	item, err := findBuildTarget(c, p.Args[0], world.KindItem)
+	if err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+	field := strings.ToLower(p.Args[1])
+	rest := strings.TrimSpace(strings.Join(p.Args[2:], " "))
+	switch field {
+	case "use":
+		if rest == "" {
+			c.Print("iset %s use <flag>", p.Args[0])
+			return
+		}
+		item.Use = &world.UseEffect{ToggleFlag: rest, Message: "You use it.", MessageOff: "You stop using it."}
+		syncProto(c, item)
+		c.Tell(protocol.ChanBuild, fmt.Sprintf("%s use toggle %s", item.Display(), rest))
+	case "damage":
+		if rest == "" {
+			c.Print("iset %s damage 1d6", p.Args[0])
+			return
+		}
+		verb := "hit"
+		item.Weapon = &world.Weapon{Damage: first(rest), Verb: verb}
+		if item.Slot == "" {
+			item.Slot = "wield"
+			item.Wearable = true
+		}
+		syncProto(c, item)
+		c.Tell(protocol.ChanBuild, fmt.Sprintf("%s weapon %s", item.Display(), item.Weapon.Damage))
+	case "value":
+		n := 0
+		fmt.Sscanf(rest, "%d", &n)
+		item.Value = n
+		syncProto(c, item)
+		c.Tell(protocol.ChanBuild, fmt.Sprintf("%s value %d", item.Display(), n))
+	default:
+		c.Print("iset fields: use, damage, value")
+	}
+}
+
+func findBuildTarget(c *commands.Context, token string, kind world.Kind) (*world.Entity, error) {
+	if proto := c.World.Protos[world.ID(token)]; proto != nil && proto.Kind == kind {
+		return proto, nil
+	}
+	for _, proto := range c.World.Protos {
+		if proto.Kind == kind && proto.HasKeyword(token) {
+			return proto, nil
+		}
+	}
+	one, many := c.World.Match(c.Actor, token, world.ScopeRoom, world.ScopeInventory)
+	if one != nil && one.Kind == kind {
+		return one, nil
+	}
+	if len(many) > 0 {
+		return nil, fmt.Errorf("which one?")
+	}
+	return nil, fmt.Errorf("no %s %q here (try a prototype id)", kind, token)
+}
+
+func onlyMobile(c *commands.Context) *world.Entity {
+	room := c.World.RoomOf(c.Actor)
+	if room == nil {
+		return nil
+	}
+	var found *world.Entity
+	for _, e := range c.World.Children(room.ID) {
+		if e.Kind == world.KindMobile {
+			if found != nil {
+				return nil
+			}
+			found = e
+		}
+	}
+	return found
+}
+
+func syncProto(c *commands.Context, e *world.Entity) {
+	pid := e.PrototypeID
+	if pid == "" {
+		pid = e.ID
+	}
+	if proto := c.World.Protos[pid]; proto != nil {
+		if e.Use != nil {
+			u := *e.Use
+			proto.Use = &u
+		}
+		if e.Weapon != nil {
+			w := *e.Weapon
+			proto.Weapon = &w
+		}
+		proto.Value = e.Value
+		proto.Wearable = e.Wearable
+		proto.Slot = e.Slot
+	}
 }
 
 func name(c *commands.Context, p commands.Parsed) {

@@ -33,6 +33,7 @@ type Context struct {
 	BuildWalk     *bool
 	OnMoveFail    func(dir string) bool // buildwalk hook; return true if handled
 	After         func()                // push UI
+	BeginCapture  func(done func(text string))
 }
 
 func (c *Context) Print(format string, args ...any) {
@@ -87,6 +88,10 @@ func init() {
 	register("say", say)
 	register("emote", emote)
 	register("ask", ask)
+	register("talk", talk)
+	register("list", listShop)
+	register("buy", buy)
+	register("sell", sell)
 	register("go", goCmd)
 	register("save", saveCmd)
 	register("quit", quitCmd)
@@ -286,6 +291,16 @@ func exitsCmd(c *Context, _ Parsed) {
 
 func score(c *Context, _ Parsed) {
 	c.Print("%s", c.Actor.Name)
+	if c.Actor.OriginName != "" || c.Actor.RoleName != "" {
+		var bits []string
+		if c.Actor.OriginName != "" {
+			bits = append(bits, c.Actor.OriginName)
+		}
+		if c.Actor.RoleName != "" {
+			bits = append(bits, c.Actor.RoleName)
+		}
+		c.Print("  %s", strings.Join(bits, " · "))
+	}
 	keys := make([]string, 0, len(c.Actor.Resources))
 	for k := range c.Actor.Resources {
 		keys = append(keys, k)
@@ -911,11 +926,183 @@ func emote(c *Context, p Parsed) {
 	c.Say("%s %s", c.Actor.Name, p.Rest)
 }
 
+func talk(c *Context, p Parsed) {
+	if p.Rest == "" {
+		c.Print("Talk to whom?")
+		return
+	}
+	npc, err := resolve(c, p.Rest, world.ScopeRoom)
+	if err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+	if npc.Kind != world.KindMobile && npc.Kind != world.KindPlayer {
+		c.Print("You get no answer.")
+		return
+	}
+	if len(npc.Topics) == 0 {
+		c.Print("%s has nothing particular to say. Try ask %s about <topic> if you learn a word.", npc.CapDisplay(), firstWord(npc.Name))
+		return
+	}
+	keys := make([]string, 0, len(npc.Topics))
+	for k := range npc.Topics {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	c.Print("%s might talk about: %s.", npc.CapDisplay(), strings.Join(keys, ", "))
+	c.Print("Ask with: ask %s about %s", firstWord(p.Rest), keys[0])
+}
+
+func listShop(c *Context, p Parsed) {
+	npc, err := shopkeep(c, p.Rest)
+	if err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+	goods := c.World.Children(npc.ID)
+	if len(goods) == 0 {
+		c.Print("%s has nothing for sale.", npc.CapDisplay())
+		return
+	}
+	cur := shopCurrency(npc)
+	c.Print("%s offers:", npc.CapDisplay())
+	for _, it := range goods {
+		c.Print("  %s  (%d %s)", it.Display(), shopPrice(npc, it), c.Pack.Lexicon.Label(cur))
+	}
+	c.Print("Your %s: %d", c.Pack.Lexicon.Label(cur), c.Actor.Res(cur).Current)
+}
+
+func buy(c *Context, p Parsed) {
+	rest := p.Rest
+	from := ""
+	what := rest
+	low := strings.ToLower(rest)
+	if i := strings.Index(low, " from "); i >= 0 {
+		what = strings.TrimSpace(rest[:i])
+		from = strings.TrimSpace(rest[i+6:])
+	}
+	npc, err := shopkeep(c, from)
+	if err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+	if what == "" {
+		c.Print("Buy what?")
+		return
+	}
+	var item *world.Entity
+	for _, it := range c.World.Children(npc.ID) {
+		if it.HasKeyword(firstWord(what)) {
+			if item != nil {
+				c.Print("Which one?")
+				return
+			}
+			item = it
+		}
+	}
+	if item == nil {
+		c.Print("%s doesn't have a %q.", npc.CapDisplay(), what)
+		return
+	}
+	cur := shopCurrency(npc)
+	price := shopPrice(npc, item)
+	if c.Actor.Res(cur).Current < price {
+		c.Print("You can't afford that (%d %s).", price, c.Pack.Lexicon.Label(cur))
+		return
+	}
+	c.Actor.AdjustRes(cur, -price)
+	if err := c.World.Move(item.ID, c.Actor.ID); err != nil {
+		c.Actor.AdjustRes(cur, price)
+		c.Print("%s", err.Error())
+		return
+	}
+	c.Print("You buy %s for %d %s.", item.Display(), price, c.Pack.Lexicon.Label(cur))
+}
+
+func sell(c *Context, p Parsed) {
+	rest := p.Rest
+	to := ""
+	what := rest
+	low := strings.ToLower(rest)
+	if i := strings.Index(low, " to "); i >= 0 {
+		what = strings.TrimSpace(rest[:i])
+		to = strings.TrimSpace(rest[i+4:])
+	}
+	npc, err := shopkeep(c, to)
+	if err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+	item, err := resolve(c, what, world.ScopeInventory)
+	if err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+	cur := shopCurrency(npc)
+	price := item.Value
+	if price < 1 {
+		c.Print("%s isn't interested in %s.", npc.CapDisplay(), item.Display())
+		return
+	}
+	unequipIfWorn(c, item)
+	if err := c.World.Move(item.ID, npc.ID); err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+	c.Actor.AdjustRes(cur, price)
+	c.Print("You sell %s for %d %s.", item.Display(), price, c.Pack.Lexicon.Label(cur))
+}
+
+func shopkeep(c *Context, token string) (*world.Entity, error) {
+	if token != "" {
+		e, err := resolve(c, token, world.ScopeRoom)
+		if err != nil {
+			return nil, err
+		}
+		if e.Shop == nil {
+			return nil, fmt.Errorf("%s isn't selling anything", e.CapDisplay())
+		}
+		return e, nil
+	}
+	room := c.World.RoomOf(c.Actor)
+	var found *world.Entity
+	for _, e := range c.World.Children(room.ID) {
+		if e.Shop != nil {
+			if found != nil {
+				return nil, fmt.Errorf("which shopkeeper?")
+			}
+			found = e
+		}
+	}
+	if found == nil {
+		return nil, fmt.Errorf("no one here is buying or selling")
+	}
+	return found, nil
+}
+
+func shopCurrency(npc *world.Entity) string {
+	if npc.Shop != nil && npc.Shop.Currency != "" {
+		return npc.Shop.Currency
+	}
+	return "gold"
+}
+
+func shopPrice(npc, item *world.Entity) int {
+	n := item.Value
+	if n < 1 {
+		n = 1
+	}
+	if npc.Shop != nil && npc.Shop.Markup > 0 {
+		n += n * npc.Shop.Markup / 100
+	}
+	return n
+}
+
 func ask(c *Context, p Parsed) {
 	low := strings.ToLower(p.Rest)
 	i := strings.Index(low, " about ")
 	if i < 0 {
-		c.Print("Ask whom about what?")
+		talk(c, p)
 		return
 	}
 	whom := strings.TrimSpace(p.Rest[:i])

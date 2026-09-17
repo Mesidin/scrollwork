@@ -55,6 +55,30 @@ func run(args []string) error {
 		fmt.Printf("Created pack %s at %s\n", p.Meta.ID, dir)
 		fmt.Printf("Build it with: sudengine build %s\n", p.Meta.ID)
 		return nil
+	case "validate":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: sudengine validate <pack>")
+		}
+		dir := resolvePack(gamesDir, args[1])
+		p, err := pack.Load(dir)
+		if err != nil {
+			return err
+		}
+		if err := p.Validate(); err != nil {
+			return err
+		}
+		fmt.Printf("OK  %s  (%s)\n", p.Meta.ID, p.Dir)
+		return nil
+	case "install":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: sudengine install <folder-or-zip>")
+		}
+		info, err := pack.Install(args[1], gamesDir)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Installed %s (%s) -> %s\n", info.Title, info.ID, info.Dir)
+		return nil
 	case "help", "-h", "--help":
 		fmt.Print(`Erickson Stories / sudengine — a single-player MUD engine
 
@@ -63,6 +87,8 @@ Usage:
   sudengine play <pack>     Play a pack
   sudengine build <pack>    Build/edit a pack in-engine
   sudengine new <id>        Create a blank pack
+  sudengine validate <pack> Check a pack's YAML
+  sudengine install <src>   Copy a folder or zip into games/
 
 Packs live in ./games/<id>/  (YAML + Lua, no recompile).
 Saves live in ./saves/<pack-id>/.
