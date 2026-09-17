@@ -1,0 +1,167 @@
+- id: house.porch
+  name: Front Porch
+  short: the front porch
+  long: |
+    Weathered boards creak underfoot. The front door stands open to the north,
+    spilling a rectangle of dim interior light onto the peeling paint.
+  x: 0
+  y: -1
+  z: 0
+  flags: [outdoor]
+  exits:
+    north:
+      to: house.foyer
+
+- id: house.foyer
+  name: Foyer
+  short: the foyer
+  long: |
+    A narrow hall with a threadbare runner. Stairs would go up, but they
+    collapsed years ago. A heavy door under the stairs leads down to the cellar.
+    The parlor opens north, the kitchen east, a small study west.
+  x: 0
+  y: 0
+  z: 0
+  flags: [indoor]
+  npcs: [house.maid]
+  extras:
+    - keywords: [stairs, staircase]
+      name: collapsed stairs
+      long: The staircase is a wreck of splinters. You cannot go up.
+  exits:
+    south:
+      to: house.porch
+    north:
+      to: house.parlor
+    east:
+      to: house.kitchen
+    west:
+      to: house.study
+    down:
+      to: house.cellar
+      door: true
+      locked: true
+      key: house.cellar-key
+
+- id: house.parlor
+  name: Parlor
+  short: the parlor
+  long: |
+    Heavy drapes choke the windows. A horsehair sofa faces a cold fireplace.
+    Dust has been recently disturbed on the mantel.
+  x: 0
+  y: 1
+  z: 0
+  flags: [indoor]
+  items: [house.coat, house.cellar-key]
+  extras:
+    - keywords: [sofa, couch]
+      name: a horsehair sofa
+      long: Uncomfortable even to look at. Nothing hides in the cushions.
+    - keywords: [fireplace, mantel]
+      name: the fireplace
+      long: Cold ash. Someone has been here, but not to light a fire.
+  exits:
+    south:
+      to: house.foyer
+
+- id: house.kitchen
+  name: Kitchen
+  short: the kitchen
+  long: |
+    A black iron stove, a dry sink, and a table with one chair. The air smells
+    faintly of lamp oil.
+  x: 1
+  y: 0
+  z: 0
+  flags: [indoor]
+  items: [house.lamp]
+  extras:
+    - keywords: [stove]
+      name: an iron stove
+      long: Dead cold.
+  exits:
+    west:
+      to: house.foyer
+
+- id: house.study
+  name: Study
+  short: the study
+  long: |
+    Books slumped on sagging shelves. A portrait hangs slightly crooked above
+    the desk, as if it had been taken down and put back in a hurry.
+  x: -1
+  y: 0
+  z: 0
+  flags: [indoor]
+  extras:
+    - keywords: [portrait, painting, picture]
+      name: a crooked portrait
+      long: A stern woman in black. The oil has cracked, but the eyes have not.
+      scripts: portrait.lua
+    - keywords: [desk]
+      name: a writing desk
+      long: Empty drawers. A ring of dust where a lamp used to sit.
+    - keywords: [books, shelves, bookshelf]
+      name: sagging shelves
+      long: Ledgers and sermons. Nothing you'd steal.
+  exits:
+    east:
+      to: house.foyer
+
+- id: house.cellar
+  name: Cellar Stairs
+  short: the cellar stairs
+  long: |
+    Stone steps descend into damp air. The boards above leak a little light,
+    but the side rooms swallow it.
+  x: 0
+  y: 0
+  z: -1
+  flags: [indoor, dark]
+  exits:
+    up:
+      to: house.foyer
+      door: true
+    east:
+      to: house.wine
+    west:
+      to: house.cistern
+
+- id: house.wine
+  name: Wine Cellar
+  short: the wine cellar
+  long: |
+    Racks of bottles, most empty, some furred with dust. Something has nested
+    among the broken crates.
+  x: 1
+  y: 0
+  z: -1
+  flags: [indoor, dark]
+  npcs: [house.rat]
+  extras:
+    - keywords: [bottles, racks, wine]
+      name: wine racks
+      long: Vinegar and glass. Not a drop worth drinking.
+  exits:
+    west:
+      to: house.cellar
+
+- id: house.cistern
+  name: Cistern
+  short: the cistern
+  long: |
+    A round room of wet brick. Black water sits in a stone basin. The surface
+    does not quite stay still.
+  x: -1
+  y: 0
+  z: -1
+  flags: [indoor, dark]
+  npcs: [house.thing]
+  extras:
+    - keywords: [water, basin, cistern]
+      name: the black water
+      long: You cannot see the bottom. You do not want to.
+  exits:
+    east:
+      to: house.cellar

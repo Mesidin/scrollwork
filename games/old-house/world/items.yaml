@@ -1,0 +1,26 @@
+- id: house.lamp
+  keywords: [lamp, lantern, light]
+  name: brass lamp
+  short: a brass lamp
+  long: A dented oil lamp. The wick still looks willing.
+  takeable: true
+  use:
+    toggle_flag: light
+    message: You light the lamp. Warm light pools around your feet.
+    message_off: You douse the lamp. The dark leans in.
+
+- id: house.coat
+  keywords: [coat, overcoat]
+  name: wool coat
+  short: a heavy wool coat
+  long: Moth-eaten but thick. It would keep the cellar chill off.
+  takeable: true
+  wearable: true
+  slot: body
+
+- id: house.cellar-key
+  keywords: [key, brass, cellar]
+  name: brass key
+  short: a small brass key
+  long: The tag on the ring is faded, but you can still make out CELLAR.
+  takeable: true

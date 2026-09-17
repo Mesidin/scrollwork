@@ -1,0 +1,14 @@
+- id: steady
+  name: Steady Nerves
+  verb: steady
+  cost:
+    calm: 3
+  cooldown: 16
+  target: self
+  effects:
+    - heal:
+        resource: hp
+        dice: 1d4
+    - set_flag: steady
+  messages:
+    self: You plant your feet and breathe until the shake leaves your hands.

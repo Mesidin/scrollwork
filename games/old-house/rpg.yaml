@@ -1,0 +1,36 @@
+primary_resource: hp
+attributes:
+  - key: body
+    label: Body
+  - key: will
+    label: Will
+resources:
+  - key: hp
+    label: Grit
+    max: 24
+    regen: 1
+    regen_every: 20
+  - key: calm
+    label: Calm
+    max: 10
+    regen: 1
+    regen_every: 16
+skills: []
+slots:
+  - body
+  - wield
+chargen:
+  enabled: true
+  ask_name: true
+races: []
+roles:
+  - id: careful
+    name: Careful
+    description: You notice dust, doors, and what people will not say.
+    resources:
+      calm: 14
+  - id: reckless
+    name: Reckless
+    description: You walk toward the noise.
+    resources:
+      hp: 30

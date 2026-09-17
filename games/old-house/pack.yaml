@@ -1,0 +1,23 @@
+id: old-house
+title: The Old House
+author: sudengine
+tick_ms: 250
+combat_every: 4
+start_room: house.porch
+intro:
+  art: intro.txt
+  subtitle: a short haunted house
+  blurb: |
+    Dust, a locked cellar, and a maid who will not go downstairs.
+    Light a lamp. Ask questions. The cistern does not stay still.
+
+    Type `help` in-game, or open Help here, for how to play and how
+    this house is put together.
+ui:
+  panes:
+    - output
+    - map
+    - vitals
+    - exits
+    - inventory
+    - combat

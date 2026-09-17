@@ -1,0 +1,7 @@
+/sudengine
+/bin/
+saves/
+*.exe
+.DS_Store
+*.test
+coverage.out

@@ -1,0 +1,57 @@
+- id: house.maid
+  keywords: [maid, marta, woman, servant]
+  name: the maid
+  short: a tired maid
+  long: She wrings her hands and will not look at the cellar door.
+  ai:
+    profile: sentinel
+  topics:
+    key: "I dropped it in the parlor. I won't go back downstairs."
+    cellar: "Rats. And worse. I heard it in the cistern."
+    name: "Marta. I used to keep this house."
+    lamp: "There's still a lamp in the kitchen, if the oil hasn't gone."
+    portrait: "Don't stare at her. She doesn't like it."
+  resources:
+    hp:
+      current: 20
+      max: 20
+  scripts: maid.lua
+
+- id: house.rat
+  keywords: [rat, rodent]
+  name: bristling rat
+  short: a bristling rat
+  long: Wet black eyes. It does not startle when you look at it.
+  ai:
+    profile: aggressive
+    wander: true
+    wander_every: 16
+  combat:
+    round_speed: 4
+    attacks:
+      - name: bite
+        damage: 1d4
+  resources:
+    hp:
+      current: 8
+      max: 8
+  tags: [vermin]
+
+- id: house.thing
+  keywords: [thing, shape, figure, horror]
+  name: the thing in the water
+  short: a shape in the cistern
+  long: Too many joints. It pulls itself up the brick when it notices you.
+  ai:
+    profile: aggressive
+  combat:
+    round_speed: 5
+    boss: true
+    attacks:
+      - name: lash
+        damage: 1d6+1
+  resources:
+    hp:
+      current: 28
+      max: 28
+  scripts: thing.lua
