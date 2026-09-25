@@ -4,4 +4,5 @@ end
 
 function on_look(actor, self)
   echo("It notices you noticing it.")
+  set_flag("thing", "hostile")
 end

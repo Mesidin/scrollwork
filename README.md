@@ -8,18 +8,45 @@ Content is not compiled into the binary. A game is a folder of YAML, Markdown, a
 
 ## Run
 
-Go 1.22+ (developed on 1.27).
+Go 1.22+ (developed on 1.27). Run these commands from the project directory so the engine can find `games/`.
 
 ```bash
 go test ./...
+```
+
+On macOS and Linux, build a binary named `sudengine`:
+
+```bash
 go build -o sudengine ./cmd/sudengine
 
 ./sudengine                 # launcher
-./sudengine play old-house  # sample pack
+./sudengine play old-house      # story sample
+./sudengine play green-hollow   # fantasy sample: levels, training, checks
 ./sudengine build old-house # in-engine workshop
 ./sudengine new mygame      # blank pack under games/mygame
 ./sudengine validate old-house
 ./sudengine install path/to/pack.zip
+```
+
+On Windows, build `sudengine.exe`. Windows runs a program when its name ends with an extension from `PATHEXT`, which includes `.exe`. A file named `sudengine` has no extension, so Windows asks which app should open it. Close that dialog. PowerShell, Windows Terminal, and Alacritty all run the game when you type the command in the shell:
+
+```powershell
+go build -o sudengine.exe ./cmd/sudengine
+
+.\sudengine.exe                 # launcher
+.\sudengine.exe play old-house      # story sample
+.\sudengine.exe play green-hollow   # fantasy sample: levels, training, checks
+.\sudengine.exe build old-house # in-engine workshop
+.\sudengine.exe new mygame      # blank pack under games/mygame
+.\sudengine.exe validate old-house
+.\sudengine.exe install path/to/pack.zip
+```
+
+`go run` starts the engine on either platform and does not write a binary:
+
+```bash
+go run ./cmd/sudengine
+go run ./cmd/sudengine play old-house
 ```
 
 Packs live in `games/<id>/`. Snapshots live in `saves/<pack-id>/` (gitignored).
@@ -48,7 +75,7 @@ help systems
 help building
 ```
 
-In-game manuals: `help`, `help playing`, `help systems`, `help items`, `help building`. The same files appear on the intro Help menu.
+`help` opens a manual. Game rules and engine guides (playing, building, commands) are listed apart. A long guide such as building is split into sections. Page Up and Page Down scroll the page. The intro Help menu opens the same manual.
 
 ## Architecture
 
@@ -75,7 +102,8 @@ TUI (Bubble Tea)  ← session events →  game server (tick, parser, world, Lua)
 | `internal/script` | sandboxed Lua |
 | `internal/theme` | ANSI-16 + Omarchy overlay |
 | `internal/docs/engine` | engine manuals (embedded) |
-| `games/old-house` | sample pack |
+| `games/old-house` | story sample |
+| `games/green-hollow` | fantasy sample (levels, training, checks) |
 
 Locked v1 choices: MUD commands (not Infocom English), real-time ticks, Go + Lua, full-world snapshots, engine RPG skeleton only (packs name Grit vs HP), local client/server from day one.
 

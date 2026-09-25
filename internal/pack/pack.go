@@ -83,6 +83,9 @@ type ExtraYAML struct {
 	Short    string   `yaml:"short"`
 	Long     string   `yaml:"long"`
 	Scripts  string   `yaml:"scripts"`
+	Hidden   bool     `yaml:"hidden,omitempty"`
+	Notice   int      `yaml:"notice,omitempty"`
+	Search   int      `yaml:"search,omitempty"`
 }
 
 type RoomYAML struct {
@@ -119,6 +122,10 @@ type ItemYAML struct {
 	Weapon    *world.Weapon    `yaml:"weapon"`
 	Armor     *world.Armor     `yaml:"armor"`
 	Value     int              `yaml:"value"`
+	Mods      map[string]int   `yaml:"mods"`
+	Hidden    bool             `yaml:"hidden,omitempty"`
+	Notice    int              `yaml:"notice,omitempty"`
+	Search    int              `yaml:"search,omitempty"`
 	Flags     []string         `yaml:"flags"`
 	Scripts   string           `yaml:"scripts"`
 	Contains  []string         `yaml:"contains"`
@@ -135,6 +142,10 @@ type NPCYAML struct {
 	Topics    map[string]string         `yaml:"topics"`
 	Attrs     map[string]int            `yaml:"attrs"`
 	Resources map[string]world.Resource `yaml:"resources"`
+	Skills    map[string]int            `yaml:"skills"`
+	Oppose    map[string]int            `yaml:"oppose"`
+	XP        int                       `yaml:"xp"`
+	Trainer   bool                      `yaml:"trainer"`
 	Flags     []string                  `yaml:"flags"`
 	Tags      []string                  `yaml:"tags"`
 	Scripts   string                    `yaml:"scripts"`
@@ -381,6 +392,7 @@ func (p *Pack) Instantiate() (*world.World, error) {
 			}
 		}
 	}
+	world.SyncDoors(w)
 
 	// nested contains on item protos: spawn into first matching instance
 	for _, it := range p.Items {
@@ -423,6 +435,9 @@ func SpawnPlayer(w *world.World, p *Pack, name, raceID, roleID string) *world.En
 		e.RoleID = b.ID
 		e.RoleName = b.Name
 	}
+	if p.RPG.Advancement.On() {
+		e.Level = 1
+	}
 	if e.Combat == nil {
 		e.Combat = &world.Combat{
 			RoundSpeed: p.Meta.CombatEvery,
@@ -460,6 +475,10 @@ func itemFromYAML(it ItemYAML) *world.Entity {
 		Weapon:    it.Weapon,
 		Armor:     it.Armor,
 		Value:     it.Value,
+		Mods:      it.Mods,
+		Hidden:    it.Hidden,
+		Notice:    it.Notice,
+		SearchDC:  it.Search,
 		Scripts:   it.Scripts,
 		Flags:     map[string]bool{},
 	}
@@ -485,6 +504,10 @@ func npcFromYAML(n NPCYAML) *world.Entity {
 		Topics:    n.Topics,
 		Attrs:     n.Attrs,
 		Resources: n.Resources,
+		Skills:    n.Skills,
+		Oppose:    n.Oppose,
+		XP:        n.XP,
+		Trainer:   n.Trainer,
 		Tags:      n.Tags,
 		Scripts:   n.Scripts,
 		Shop:      n.Shop,
@@ -565,6 +588,9 @@ func extraToEntity(roomID string, extra ExtraYAML) *world.Entity {
 		Short:    short,
 		Long:     extra.Long,
 		Scripts:  extra.Scripts,
+		Hidden:   extra.Hidden,
+		Notice:   extra.Notice,
+		SearchDC: extra.Search,
 		Takeable: false,
 	}
 }
@@ -752,6 +778,9 @@ func (p *Pack) SyncFromWorld(w *world.World) {
 					Short:    c.Short,
 					Long:     c.Long,
 					Scripts:  c.Scripts,
+					Hidden:   c.Hidden,
+					Notice:   c.Notice,
+					Search:   c.SearchDC,
 				})
 			}
 		}
@@ -793,6 +822,10 @@ func (p *Pack) SyncFromWorld(w *world.World) {
 			Weapon:    e.Weapon,
 			Armor:     e.Armor,
 			Value:     e.Value,
+			Mods:      e.Mods,
+			Hidden:    e.Hidden,
+			Notice:    e.Notice,
+			Search:    e.SearchDC,
 			Flags:     flagList(e),
 			Scripts:   e.Scripts,
 		})
@@ -810,6 +843,10 @@ func (p *Pack) SyncFromWorld(w *world.World) {
 			Topics:    e.Topics,
 			Attrs:     e.Attrs,
 			Resources: e.Resources,
+			Skills:    e.Skills,
+			Oppose:    e.Oppose,
+			XP:        e.XP,
+			Trainer:   e.Trainer,
 			Flags:     flagList(e),
 			Tags:      e.Tags,
 			Scripts:   e.Scripts,

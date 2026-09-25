@@ -123,6 +123,8 @@
     up:
       to: house.foyer
       door: true
+      locked: true
+      key: house.cellar-key
     east:
       to: house.wine
     west:
@@ -162,6 +164,7 @@
     - keywords: [water, basin, cistern]
       name: the black water
       long: You cannot see the bottom. You do not want to.
+      scripts: thing.lua
   exits:
     east:
       to: house.cellar

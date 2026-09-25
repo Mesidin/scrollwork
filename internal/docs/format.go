@@ -3,6 +3,8 @@ package docs
 import (
 	"strings"
 	"unicode"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 const wrapWidth = 72
@@ -11,6 +13,15 @@ const wrapWidth = 72
 // headings as titles, lists as bullets, code fences as indented blocks,
 // no leftover # or ** markers.
 func Format(md string) string {
+	return FormatWidth(md, wrapWidth)
+}
+
+// FormatWidth is Format wrapped to width columns so a pane can scroll
+// vertically without a horizontal scrollbar.
+func FormatWidth(md string, width int) string {
+	if width < 8 {
+		width = 8
+	}
 	md = strings.ReplaceAll(md, "\r\n", "\n")
 	md = strings.TrimSpace(md)
 	if md == "" {
@@ -32,7 +43,7 @@ func Format(md string) string {
 			continue
 		}
 		if inFence {
-			out = append(out, "  "+strings.TrimRight(raw, " "))
+			out = append(out, chop("  "+strings.TrimRight(raw, " "), width)...)
 			continue
 		}
 		if trim == "" {
@@ -60,6 +71,9 @@ func Format(md string) string {
 				n := len([]rune(title))
 				if n > 40 {
 					n = 40
+				}
+				if n > width {
+					n = width
 				}
 				if n < 3 {
 					n = 3
@@ -89,7 +103,7 @@ func Format(md string) string {
 		}
 		rest = inline(rest)
 		if bullet != "" {
-			wrapped := wrap(rest, wrapWidth-len([]rune(bullet)))
+			wrapped := wrap(rest, width-len([]rune(bullet)))
 			if len(wrapped) == 0 {
 				out = append(out, strings.TrimRight(bullet, " "))
 				continue
@@ -101,12 +115,50 @@ func Format(md string) string {
 			}
 			continue
 		}
-		out = append(out, wrap(rest, wrapWidth)...)
+		out = append(out, wrap(rest, width)...)
 	}
 	for len(out) > 0 && out[len(out)-1] == "" {
 		out = out[:len(out)-1]
 	}
+	out = limitWidth(out, width)
 	return strings.Join(out, "\n")
+}
+
+func limitWidth(lines []string, width int) []string {
+	var out []string
+	for _, ln := range lines {
+		out = append(out, chop(ln, width)...)
+	}
+	return out
+}
+
+func chop(s string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	if s == "" || ansi.StringWidth(s) <= width {
+		return []string{s}
+	}
+	var out []string
+	var cur []rune
+	n := 0
+	for _, r := range s {
+		rw := ansi.StringWidth(string(r))
+		if rw < 1 {
+			rw = 1
+		}
+		if n+rw > width && len(cur) > 0 {
+			out = append(out, string(cur))
+			cur = cur[:0]
+			n = 0
+		}
+		cur = append(cur, r)
+		n += rw
+	}
+	if len(cur) > 0 {
+		out = append(out, string(cur))
+	}
+	return out
 }
 
 func inline(s string) string {

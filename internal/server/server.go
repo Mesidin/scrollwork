@@ -116,6 +116,7 @@ func Launch(opt Options) (*Server, *Session, error) {
 		RNG:     srv.rng,
 		Primary: p.RPG.Primary(),
 		Every:   p.Meta.CombatEvery,
+		Rules:   &p.RPG,
 		Emit: func(to *world.Entity, channel, text string) {
 			if to != nil && to.ID == sess.PlayerID {
 				sess.Send(protocol.TextEvent{Channel: protocol.Channel(channel), Text: text})
@@ -181,10 +182,10 @@ func (s *Server) greet() {
 	}
 	s.Session.Send(protocol.TextEvent{Channel: protocol.ChanSystem, Text: banner})
 	if s.Session.Mode == protocol.ModePlay {
-		commands.DescribeRoom(s.ctx(), true)
+		commands.EnterRoom(s.ctx(), true)
 	} else {
-		s.Session.Send(protocol.TextEvent{Channel: protocol.ChanBuild, Text: "Builder mode. Try: dig, desc, extra, ai, iset, spawn, proto, save pack. help building"})
-		commands.DescribeRoom(s.ctx(), true)
+		s.Session.Send(protocol.TextEvent{Channel: protocol.ChanBuild, Text: "Builder mode. The side pane shows the map and dig, desc, save pack. help building"})
+		commands.EnterRoom(s.ctx(), true)
 	}
 }
 
@@ -219,6 +220,17 @@ func (s *Server) ctx() *commands.Context {
 		SavePack: func() error {
 			s.Pack.SyncFromWorld(s.World)
 			return s.Pack.WriteWorld()
+		},
+		StartFight: func(mob *world.Entity) {
+			player := s.World.Player()
+			if mob == nil || player == nil || mob.InCombat() || !player.Alive(s.Pack.RPG.Primary()) {
+				return
+			}
+			s.Combat.Start(mob, player, s.World.Tick)
+			sess.Send(protocol.TextEvent{
+				Channel: protocol.ChanAlert,
+				Text:    fmt.Sprintf("%s attacks you!", mob.CapDisplay()),
+			})
 		},
 		BeginCapture: func(done func(text string)) {
 			sess.cap = &capture{done: done}
@@ -305,7 +317,7 @@ func (s *Server) regen() {
 			continue
 		}
 		for _, def := range s.Pack.RPG.Resources {
-			if def.Regen == 0 || def.RegenEvery <= 0 {
+			if def.Pile || def.Regen == 0 || def.RegenEvery <= 0 {
 				continue
 			}
 			if s.World.Tick%int64(def.RegenEvery) != 0 {
@@ -338,7 +350,7 @@ func (s *Server) ai() {
 		}
 		prof := e.AI.Profile
 		if player != nil && s.World.RoomOf(player) == room {
-			if prof == "aggressive" && !e.InCombat() && player.Alive(primary) {
+			if e.AI.Awake(e) && !e.InCombat() && player.Alive(primary) {
 				s.Combat.Start(e, player, s.World.Tick)
 				if player.ID == s.Session.PlayerID {
 					s.Session.Send(protocol.TextEvent{
@@ -366,9 +378,10 @@ func (s *Server) ai() {
 			}
 		}
 		if e.InCombat() {
+			s.pursue(e, room, player)
 			continue
 		}
-		if e.AI.Wander || prof == "wander" || prof == "aggressive" {
+		if e.AI.Wander || prof == "wander" {
 			every := e.AI.WanderEvery
 			if every <= 0 {
 				every = 12
@@ -381,9 +394,10 @@ func (s *Server) ai() {
 			}
 			var dirs []world.Exit
 			for _, ex := range room.Exits {
-				if !ex.Closed {
-					dirs = append(dirs, ex)
+				if ex.Closed || !e.AI.Allows(ex.To) {
+					continue
 				}
+				dirs = append(dirs, ex)
 			}
 			if len(dirs) == 0 {
 				continue
@@ -399,7 +413,7 @@ func (s *Server) ai() {
 					})
 				}
 				if s.World.RoomOf(player) == s.World.Get(ex.To) {
-					if prof == "aggressive" && player.Alive(primary) && !e.InCombat() {
+					if e.AI.Awake(e) && player.Alive(primary) && !e.InCombat() {
 						s.Combat.Start(e, player, s.World.Tick)
 						s.Session.Send(protocol.TextEvent{
 							Channel: protocol.ChanAlert,
@@ -415,6 +429,50 @@ func (s *Server) ai() {
 				}
 			}
 		}
+	}
+}
+
+func (s *Server) pursue(e, room, player *world.Entity) {
+	if e == nil || e.AI == nil || !e.AI.Pursue || e.Combat == nil {
+		return
+	}
+	tgt := s.World.Get(e.Combat.Target)
+	if tgt == nil {
+		return
+	}
+	dest := s.World.RoomOf(tgt)
+	if dest == nil || dest == room {
+		return
+	}
+	var step *world.Exit
+	for _, ex := range room.Exits {
+		if ex.Closed || ex.To != dest.ID || !e.AI.Allows(ex.To) {
+			continue
+		}
+		chosen := ex
+		step = &chosen
+		break
+	}
+	if step == nil {
+		return
+	}
+	old := room
+	_ = s.World.Move(e.ID, step.To)
+	if player == nil {
+		return
+	}
+	if s.World.RoomOf(player) == old {
+		s.Session.Send(protocol.TextEvent{
+			Channel: protocol.ChanNarrative,
+			Text:    fmt.Sprintf("%s leaves %s.", e.CapDisplay(), step.Dir),
+		})
+	}
+	if s.World.RoomOf(player) == s.World.Get(step.To) {
+		s.Session.Send(protocol.TextEvent{
+			Channel: protocol.ChanAlert,
+			Text:    fmt.Sprintf("%s follows you.", e.CapDisplay()),
+		})
+		s.pushRoom()
 	}
 }
 
@@ -437,6 +495,22 @@ func (s *Server) reapDead() {
 		}
 		room := s.World.RoomOf(e)
 		_, _ = s.Scripts.Call("on_death", player, e)
+		if player != nil && e.XP > 0 && s.Pack.RPG.Advancement.On() {
+			s.Session.Send(protocol.TextEvent{
+				Channel: protocol.ChanNarrative,
+				Text:    fmt.Sprintf("You gain %d experience.", e.XP),
+			})
+			msgs := s.Pack.RPG.Grant(player, e.XP)
+			for _, msg := range msgs {
+				s.Session.Send(protocol.TextEvent{Channel: protocol.ChanAlert, Text: msg})
+			}
+			if len(msgs) > 0 {
+				s.Session.Send(protocol.TextEvent{
+					Channel: protocol.ChanSystem,
+					Text:    "improve <skill> spends a skill point. raise <attribute> spends an attribute point. train <skill> pays a trainer.",
+				})
+			}
+		}
 		if room != nil {
 			if s.Pack.RPG.Death.NPCDrop() {
 				for _, c := range append([]world.ID{}, e.Contents...) {
@@ -481,7 +555,7 @@ func (s *Server) reapDead() {
 		if s.World.StartRoom != "" {
 			_ = s.World.Move(player.ID, s.World.StartRoom)
 		}
-		commands.DescribeRoom(s.ctx(), true)
+		commands.EnterRoom(s.ctx(), true)
 	}
 }
 
@@ -547,6 +621,7 @@ func (s *Server) pushVitals() {
 		}
 		ev.Resources = append(ev.Resources, protocol.ResourceView{
 			Key: def.Key, Label: label, Current: r.Current, Max: r.Max,
+			Pile: def.Pile, Show: s.Pack.RPG.Show(def.Key),
 		})
 	}
 	for f, on := range pl.Flags {
@@ -645,6 +720,9 @@ func (s *Server) pushPrompt() {
 		mode = " [BUILD]"
 	}
 	status := fmt.Sprintf("%s:%d/%d", label, r.Current, r.Max)
+	if s.Pack.RPG.Pile(primary) {
+		status = fmt.Sprintf("%s:%d", label, r.Current)
+	}
 	s.Session.Send(protocol.PromptEvent{
 		Text:   fmt.Sprintf("%s %s%s > ", name, status, mode),
 		Room:   name,

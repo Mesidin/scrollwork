@@ -19,6 +19,8 @@
   slot: body
   armor:
     soak: 1
+  mods:
+    escape: 1
   value: 4
 
 - id: house.knife

@@ -5,6 +5,7 @@ import (
 	"math/rand"
 
 	"sudengine/internal/dice"
+	"sudengine/internal/rpg"
 	"sudengine/internal/world"
 )
 
@@ -15,6 +16,7 @@ type Engine struct {
 	Primary string
 	Emit    Emitter
 	Every   int
+	Rules   *rpg.Schema
 }
 
 func (e *Engine) Start(a, b *world.Entity, now int64) {
@@ -92,28 +94,37 @@ func (e *Engine) swing(w *world.World, att, def *world.Entity) {
 		primary = "hp"
 	}
 	atk := attackOf(w, att, e)
+	var hit *rpg.Result
+	rules := e.Rules
+	if rules != nil {
+		if _, ok := rules.Checks["hit"]; ok {
+			opp, has := 0, false
+			if def.Oppose != nil {
+				if n, ok := def.Oppose["hit"]; ok {
+					opp, has = n, true
+				}
+			}
+			res, ok := rules.Resolve(e.RNG, w, att, "hit", opp, has)
+			if ok && !res.Success {
+				e.report(w, att, def, atk, 0, &res, true)
+				return
+			}
+			if ok {
+				hit = &res
+			}
+		}
+	}
 	dmg := dice.MustRoll(e.RNG, atk.Damage)
+	if rules != nil {
+		dmg += rules.DamageBonus(att, atk.Skill)
+	}
 	soak := armorSoak(w, def)
 	dmg -= soak
 	if dmg < 1 {
 		dmg = 1
 	}
 	def.AdjustRes(primary, -dmg)
-	verb := atk.Name
-	msgAtt := fmt.Sprintf("You %s %s for %d.", verb, def.Display(), dmg)
-	msgDef := fmt.Sprintf("%s %s you for %d.", att.CapDisplay(), ThirdPerson(verb), dmg)
-	msgRoom := fmt.Sprintf("%s %s %s.", att.CapDisplay(), ThirdPerson(verb), def.Display())
-	if e.Emit != nil {
-		if att.Kind == world.KindPlayer {
-			e.Emit(att, "narrative", msgAtt)
-		} else if def.Kind == world.KindPlayer {
-			e.Emit(def, "combat", msgDef)
-		} else {
-			if p := w.Player(); p != nil && w.RoomOf(p) == w.RoomOf(att) {
-				e.Emit(p, "narrative", msgRoom)
-			}
-		}
-	}
+	e.report(w, att, def, atk, dmg, hit, false)
 	if !def.Alive(primary) {
 		e.Stop(att)
 		e.Stop(def)
@@ -145,6 +156,57 @@ func (e *Engine) Damage(w *world.World, att, def *world.Entity, amount int, verb
 	}
 }
 
+func (e *Engine) report(w *world.World, att, def *world.Entity, atk world.Attack, dmg int, hit *rpg.Result, miss bool) {
+	if e.Emit == nil {
+		return
+	}
+	label := e.Primary
+	if e.Rules != nil {
+		label = e.Rules.Label(e.Primary, nil)
+	}
+	verb := atk.Name
+	var line string
+	token := false
+	tmpl := atk.Hit
+	if miss {
+		tmpl = atk.Miss
+	}
+	if tmpl != "" {
+		line, token = rpg.Fill(tmpl, def.Display(), att.CapDisplay(), label, dmg)
+	} else if miss {
+		if att.Kind == world.KindPlayer {
+			line = fmt.Sprintf("You miss %s.", def.Display())
+		} else {
+			line = fmt.Sprintf("%s misses you.", att.CapDisplay())
+		}
+	} else {
+		if att.Kind == world.KindPlayer {
+			line = fmt.Sprintf("You %s %s for %d.", verb, def.Display(), dmg)
+		} else if def.Kind == world.KindPlayer {
+			line = fmt.Sprintf("%s %s you for %d.", att.CapDisplay(), ThirdPerson(verb), dmg)
+		} else {
+			line = fmt.Sprintf("%s %s %s.", att.CapDisplay(), ThirdPerson(verb), def.Display())
+		}
+	}
+	if tmpl != "" && e.Rules != nil && (att.Kind == world.KindPlayer || def.Kind == world.KindPlayer) {
+		line = e.Rules.Decorate(line, dmg, token, label, hit)
+	}
+	switch {
+	case att.Kind == world.KindPlayer:
+		e.Emit(att, "narrative", line)
+	case def.Kind == world.KindPlayer:
+		ch := "combat"
+		if miss {
+			ch = "narrative"
+		}
+		e.Emit(def, ch, line)
+	default:
+		if p := w.Player(); p != nil && w.RoomOf(p) == w.RoomOf(att) {
+			e.Emit(p, "narrative", line)
+		}
+	}
+}
+
 func attackOf(w *world.World, att *world.Entity, e *Engine) world.Attack {
 	if att.Equipment != nil {
 		if id, ok := att.Equipment["wield"]; ok {
@@ -153,7 +215,10 @@ func attackOf(w *world.World, att *world.Entity, e *Engine) world.Attack {
 				if verb == "" {
 					verb = "hit"
 				}
-				return world.Attack{Name: verb, Damage: it.Weapon.Damage}
+				return world.Attack{
+					Name: verb, Damage: it.Weapon.Damage, Skill: it.Weapon.Skill,
+					Hit: it.Weapon.Hit, Miss: it.Weapon.Miss,
+				}
 			}
 		}
 	}

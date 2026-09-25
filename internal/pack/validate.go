@@ -117,10 +117,30 @@ func (p *Pack) Validate() error {
 	if p.RPG.PrimaryResource != "" && !hasResource(p, p.RPG.PrimaryResource) {
 		errs = append(errs, fmt.Sprintf("rpg.yaml: primary_resource %q is not in resources", p.RPG.PrimaryResource))
 	}
+	for name, ch := range p.RPG.Checks {
+		for _, ref := range ch.Actor {
+			if !knownRating(p, ref) {
+				errs = append(errs, fmt.Sprintf("rpg.yaml: check %s actor %q is not an attribute or skill", name, ref))
+			}
+		}
+	}
+	for _, sk := range p.RPG.Skills {
+		if sk.Parent != "" && p.RPG.Attr(sk.Parent) == nil {
+			errs = append(errs, fmt.Sprintf("rpg.yaml: skill %s parent %q is not an attribute", sk.Key, sk.Parent))
+		}
+	}
 	if len(errs) == 0 {
 		return nil
 	}
 	return errs
+}
+
+func knownRating(p *Pack, ref string) bool {
+	key := ref
+	if i := strings.LastIndex(ref, "."); i >= 0 {
+		key = ref[i+1:]
+	}
+	return p.RPG.Attr(key) != nil || p.RPG.Skill(key) != nil
 }
 
 func hasResource(p *Pack, key string) bool {

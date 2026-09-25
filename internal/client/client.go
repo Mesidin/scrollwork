@@ -66,8 +66,12 @@ type Model struct {
 	menuCursor int
 	errLine    string
 
-	helpTopics []docs.Topic
-	helpBody   string
+	helpTopics   []docs.Topic
+	helpTopic    int
+	helpSection  int
+	helpBodyY    int
+	helpMenuY    int
+	helpFromGame bool
 
 	cgStep int // 0 name, 1 race, 2 role
 	cgName string
@@ -92,16 +96,17 @@ func New(gamesDir string) Model {
 
 	games, _ := pack.Discover(gamesDir)
 	m := Model{
-		state:    stateLauncher,
-		games:    games,
-		gamesDir: gamesDir,
-		input:    ti,
-		log:      log,
-		side:     side,
-		layout:   []string{"output", "map", "vitals"},
-		prompt:   "> ",
-		title:    "Erickson Stories",
-		theme:    theme.Load(),
+		state:     stateLauncher,
+		games:     games,
+		gamesDir:  gamesDir,
+		input:     ti,
+		log:       log,
+		side:      side,
+		layout:    []string{"output", "map", "vitals"},
+		prompt:    "> ",
+		title:     "Erickson Stories",
+		theme:     theme.Load(),
+		helpTopic: -1,
 	}
 	return m
 }
@@ -123,6 +128,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.layoutPanes()
+		if m.state == stateHelp {
+			m.revealHelpMenu()
+			m = m.scrollHelpBody(0)
+		}
+		return m, nil
+	case tea.MouseWheelMsg:
+		if m.state == stateHelp {
+			return m.wheelHelp(msg)
+		}
+		if m.state == stateGame {
+			return m.wheelGame(msg)
+		}
+		return m, nil
+	case tea.MouseClickMsg:
+		if m.state == stateHelp {
+			return m.clickHelp(msg)
+		}
 		return m, nil
 	case tea.KeyPressMsg:
 		switch m.state {
@@ -178,6 +200,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitEvent(m.sess)
 	case protocol.ModeEvent:
 		m.mode = msg.Mode
+		m.layoutPanes()
 		return m, waitEvent(m.sess)
 	case protocol.TitleEvent:
 		m.title = msg.Title
@@ -292,6 +315,9 @@ func (m Model) updateGameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.history = append(m.history, line)
 		m.histIdx = len(m.history)
 		m.appendChan(protocol.ChanSystem, "> "+line)
+		if topic, section, ok := helpQuery(line); ok {
+			return m.openHelpQuery(topic, section)
+		}
 		if m.sess != nil {
 			m.sess.In <- line
 		}
@@ -380,6 +406,9 @@ func (m *Model) layoutPanes() {
 		if sideW < 24 {
 			sideW = 24
 		}
+		if m.mode == protocol.ModeBuild && sideW < 32 {
+			sideW = 32
+		}
 		if sideW > 36 {
 			sideW = 36
 		}
@@ -400,6 +429,9 @@ func (m *Model) layoutPanes() {
 }
 
 func (m Model) showSide() bool {
+	if m.mode == protocol.ModeBuild {
+		return true
+	}
 	for _, p := range m.layout {
 		if p == "map" || p == "vitals" || p == "inventory" || p == "combat" || p == "exits" {
 			return true
@@ -409,6 +441,11 @@ func (m Model) showSide() bool {
 }
 
 func (m *Model) refreshSide() {
+	if m.mode == protocol.ModeBuild {
+		m.side.SetContent(m.buildSide())
+		m.side.GotoTop()
+		return
+	}
 	var b strings.Builder
 	want := func(name string) bool {
 		for _, p := range m.layout {
@@ -423,8 +460,8 @@ func (m *Model) refreshSide() {
 		if m.room.Title != "" {
 			b.WriteString(m.room.Title + "\n")
 		}
-		for _, r := range m.vitals.Resources {
-			b.WriteString(fmt.Sprintf("%s %d/%d\n", r.Label, r.Current, r.Max))
+		for _, r := range hudResources(m.vitals.Resources, false) {
+			b.WriteString(r.Text() + "\n")
 		}
 		if m.vitals.InCombat {
 			b.WriteString("IN COMBAT\n")
@@ -478,6 +515,71 @@ func (m *Model) refreshSide() {
 		}
 	}
 	m.side.SetContent(strings.TrimRight(b.String(), "\n"))
+}
+
+func (m Model) buildSide() string {
+	var b strings.Builder
+	b.WriteString(m.section("build"))
+	if m.room.Title != "" {
+		b.WriteString(m.room.Title + "\n")
+	}
+	if m.room.ID != "" {
+		b.WriteString(m.room.ID + "\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(m.section("map"))
+	b.WriteString("@ this room\n")
+	if m.cmap.Text != "" {
+		b.WriteString(m.cmap.Text)
+		b.WriteByte('\n')
+	} else {
+		b.WriteString("No map. Set x, y, z on rooms.\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(m.section("commands"))
+	for _, line := range []string{
+		"dig n Name",
+		"buildwalk",
+		"name <title>",
+		"desc <line>",
+		"rflags dark",
+		"goto <id>",
+		"rooms",
+		"spawn <id>",
+		"save pack",
+		"help building",
+	} {
+		b.WriteString(line + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m Model) wheelGame(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	dir := 0
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		dir = -1
+	case tea.MouseWheelDown:
+		dir = 1
+	default:
+		return m, nil
+	}
+	step := 3
+	overSide := m.showSide() && m.side.Width() > 0 && msg.X >= m.log.Width()
+	if overSide {
+		if dir < 0 {
+			m.side.ScrollUp(step)
+		} else {
+			m.side.ScrollDown(step)
+		}
+		return m, nil
+	}
+	if dir < 0 {
+		m.log.ScrollUp(step)
+	} else {
+		m.log.ScrollDown(step)
+	}
+	return m, nil
 }
 
 func (m Model) section(title string) string {
@@ -545,8 +647,8 @@ func (m Model) viewGame() string {
 
 func (m Model) statusLine() string {
 	var rest []string
-	for _, r := range m.vitals.Resources {
-		rest = append(rest, fmt.Sprintf("%s %d/%d", r.Label, r.Current, r.Max))
+	for _, r := range hudResources(m.vitals.Resources, true) {
+		rest = append(rest, r.Text())
 	}
 	if m.mode == protocol.ModeBuild {
 		rest = append(rest, "BUILD")
@@ -555,6 +657,25 @@ func (m Model) statusLine() string {
 		return strings.Join(append([]string{m.room.Title}, rest...), "  │  ")
 	}
 	return m.theme.StatusLine(m.width, m.room.Title, strings.Join(rest, "  │  "), m.vitals.InCombat)
+}
+
+// hudResources keeps bar resources on the status line.
+// The side pane also keeps show:side. sheet stays on stats.
+func hudResources(rs []protocol.ResourceView, status bool) []protocol.ResourceView {
+	var out []protocol.ResourceView
+	for _, r := range rs {
+		if status {
+			if r.Show == "bar" {
+				out = append(out, r)
+			}
+			continue
+		}
+		if r.Show == "sheet" {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 func paneStyle() lipgloss.Style {

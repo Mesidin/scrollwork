@@ -1,0 +1,40 @@
+- id: hollow.sword
+  keywords: [sword, blade]
+  name: short sword
+  short: a short sword
+  long: Nicked, but the balance is honest.
+  takeable: true
+  wearable: true
+  slot: wield
+  weapon:
+    damage: 1d6
+    verb: slash
+    skill: melee
+    hit: "You slash {name}."
+    miss: "You miss {name}."
+  value: 8
+
+- id: hollow.cloak
+  keywords: [cloak, cape]
+  name: wool cloak
+  short: a wool cloak
+  long: Green enough to pass for a hedge.
+  takeable: true
+  wearable: true
+  slot: body
+  mods:
+    escape: 1
+  armor:
+    soak: 1
+  value: 6
+
+- id: hollow.ring
+  keywords: [ring, silver]
+  name: silver ring
+  short: a silver ring
+  long: A twist of silver, still warm from a pocket.
+  takeable: true
+  hidden: true
+  notice: 10
+  search: 7
+  value: 15

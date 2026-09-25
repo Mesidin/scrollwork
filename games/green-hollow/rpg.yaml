@@ -1,0 +1,110 @@
+primary_resource: vigor
+attributes:
+  - key: body
+    label: Body
+    base: 1
+    max: 5
+  - key: reflex
+    label: Reflex
+    base: 1
+    max: 5
+  - key: mind
+    label: Mind
+    base: 1
+    max: 5
+skills:
+  - key: melee
+    label: Melee
+    parent: body
+    max: 10
+    damage_every: 2
+  - key: footwork
+    label: Footwork
+    parent: reflex
+    max: 10
+  - key: notice
+    label: Notice
+    parent: mind
+    max: 10
+resources:
+  - key: vigor
+    label: Vigor
+    max: 18
+    regen: 1
+    regen_every: 20
+    show: bar
+  - key: focus
+    label: Focus
+    max: 8
+    regen: 1
+    regen_every: 16
+    show: side
+  - key: coin
+    label: Coin
+    pile: true
+    show: side
+checks:
+  escape:
+    roll: 2d6
+    mode: over
+    actor: [skill.footwork]
+    gear: [escape]
+    difficulty: 7
+  hit:
+    roll: 2d6
+    mode: over
+    actor: [skill.melee]
+    difficulty: 8
+  notice:
+    roll: 2d6
+    mode: over
+    actor: [skill.notice]
+    difficulty: 7
+feedback:
+  rolls: true
+  numbers: true
+advancement:
+  enabled: true
+  xp: 15
+  xp_step: 10
+  skill_points: 1
+  attribute_every: 10
+  train_cost: 8
+  currency: coin
+  resources:
+    vigor: 2
+slots:
+  - body
+  - wield
+chargen:
+  enabled: true
+  ask_name: true
+roles:
+  - id: warden
+    name: Warden
+    description: You hold the line. More body, more vigor.
+    attrs:
+      body: 1
+    resources:
+      vigor: 24
+      focus: 6
+      coin: 12
+  - id: scholar
+    name: Scholar
+    description: You mend what the thicket breaks. More mind, more focus.
+    attrs:
+      mind: 1
+    resources:
+      vigor: 16
+      focus: 14
+      coin: 12
+  - id: scout
+    name: Scout
+    description: You see the track and you leave when you should.
+    attrs:
+      reflex: 1
+      mind: 1
+    resources:
+      vigor: 18
+      focus: 8
+      coin: 12

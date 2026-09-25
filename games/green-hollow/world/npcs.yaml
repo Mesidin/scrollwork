@@ -1,0 +1,105 @@
+- id: hollow.bram
+  keywords: [bram, sergeant, trainer, soldier]
+  name: Sergeant Bram
+  short: Sergeant Bram
+  long: Grey at the temples. He watches your feet more than your face.
+  trainer: true
+  topics:
+    train: "Say train and the skill. Footwork, melee, notice. Coin on the bench."
+    wolf: "Two of them in the thicket. The camp north of that is worse."
+    ring: "If you see silver in the thorn, it was not left for the wolves."
+  ai:
+    profile: sentinel
+
+- id: hollow.wolf
+  keywords: [wolf, dog]
+  name: grey wolf
+  short: a grey wolf
+  long: Ribs and teeth. It is already moving.
+  xp: 8
+  attrs:
+    body: 1
+  skills:
+    melee: 1
+  oppose:
+    hit: 8
+    escape: 7
+  ai:
+    profile: aggressive
+    wander: true
+    wander_every: 12
+    pursue: true
+    rooms: [hollow.thicket, hollow.camp]
+  combat:
+    round_speed: 4
+    attacks:
+      - name: bite
+        damage: 1d4
+        skill: melee
+        hit: "The {Name} tore into you with a ravenous bite."
+        miss: "The {Name} snapped and missed."
+  resources:
+    vigor:
+      current: 10
+      max: 10
+
+- id: hollow.wolf-2
+  keywords: [wolf, second, pair]
+  name: second wolf
+  short: a second wolf
+  long: It stays wide of the first and watches your cloak.
+  xp: 8
+  attrs:
+    body: 1
+  skills:
+    melee: 1
+  oppose:
+    hit: 8
+    escape: 7
+  ai:
+    profile: aggressive
+    wander: true
+    wander_every: 14
+    pursue: true
+    rooms: [hollow.thicket, hollow.camp]
+  combat:
+    round_speed: 4
+    attacks:
+      - name: bite
+        damage: 1d4
+        hit: "The {Name} catches your arm."
+        miss: "The {Name} lunges short."
+  resources:
+    vigor:
+      current: 8
+      max: 8
+
+- id: hollow.brigand
+  keywords: [brigand, bandit, man]
+  name: the brigand
+  short: a brigand
+  long: A stolen breastplate over a farmer's shirt. The sword is better than he is.
+  xp: 20
+  attrs:
+    body: 2
+  skills:
+    melee: 2
+  oppose:
+    hit: 9
+    escape: 10
+  ai:
+    profile: aggressive
+    pursue: true
+    rooms: [hollow.camp, hollow.thicket]
+  combat:
+    round_speed: 4
+    attacks:
+      - name: chop
+        damage: 1d6+1
+        skill: melee
+        hit: "The {Name} chops into you."
+        miss: "The {Name} chops the air."
+  resources:
+    vigor:
+      current: 18
+      max: 18

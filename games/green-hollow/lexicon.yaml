@@ -1,0 +1,13 @@
+labels:
+  vigor: Vigor
+  focus: Focus
+  coin: Coin
+  body: Body
+  reflex: Reflex
+  mind: Mind
+  melee: Melee
+  footwork: Footwork
+  notice: Notice
+  role: Role
+  class: Role
+commands: {}

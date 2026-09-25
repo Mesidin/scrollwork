@@ -1,0 +1,23 @@
+id: green-hollow
+title: Green Hollow
+author: sudengine
+tick_ms: 250
+combat_every: 4
+start_room: hollow.square
+intro:
+  art: intro.txt
+  subtitle: a short fantasy drill
+  blurb: |
+    A square, a trainer, and a thicket that does not stay empty.
+    Choose a role. Take the sword. Spend what you earn.
+
+    stats, inventory, and equipment show your sheet.
+    improve and raise spend level points. train pays the sergeant.
+ui:
+  panes:
+    - output
+    - map
+    - vitals
+    - exits
+    - inventory
+    - combat

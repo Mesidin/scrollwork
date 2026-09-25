@@ -78,9 +78,10 @@ func Title(body, fallback string) string {
 	return fallback
 }
 
-// Merge lists pack topics first (they win on key clash), then engine topics.
+// Merge lists pack topics first, then every engine topic.
+// A pack file with the same key is what `help <key>` opens. The engine copy
+// stays in the list so building and the other shared manuals remain reachable.
 func Merge(packHelp map[string]string) []Topic {
-	seen := map[string]bool{}
 	var out []Topic
 	var keys []string
 	for k := range packHelp {
@@ -95,14 +96,8 @@ func Merge(packHelp map[string]string) []Topic {
 			Source: SourceGame,
 			Body:   body,
 		})
-		seen[k] = true
 	}
-	for _, t := range EngineTopics() {
-		if seen[t.Key] {
-			continue
-		}
-		out = append(out, t)
-	}
+	out = append(out, EngineTopics()...)
 	return out
 }
 

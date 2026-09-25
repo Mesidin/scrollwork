@@ -43,7 +43,8 @@ func (m Model) openIntro(info pack.Info, mode protocol.Mode) (tea.Model, tea.Cmd
 	m.menuCursor = 0
 	m.title = p.Meta.Title
 	m.errLine = ""
-	m.helpBody = ""
+	m.helpTopic = -1
+	m.helpFromGame = false
 	return m, nil
 }
 
@@ -280,71 +281,6 @@ func indexOf(steps []int, v int) int {
 	return -1
 }
 
-func (m Model) openHelp() (tea.Model, tea.Cmd) {
-	packHelp := map[string]string{}
-	if m.pack != nil {
-		packHelp = m.pack.Help
-	}
-	m.helpTopics = docs.Merge(packHelp)
-	m.helpBody = ""
-	m.menuCursor = 0
-	m.state = stateHelp
-	return m, nil
-}
-
-func (m Model) updateHelp(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
-		return m, tea.Quit
-	case "esc", "q":
-		if m.helpBody != "" {
-			m.helpBody = ""
-			return m, nil
-		}
-		m.state = stateIntro
-		m.menuCursor = 0
-		return m, nil
-	case "up", "k":
-		if m.helpBody != "" {
-			m.log.ScrollUp(1)
-			return m, nil
-		}
-		if m.menuCursor > 0 {
-			m.menuCursor--
-		}
-	case "down", "j":
-		if m.helpBody != "" {
-			m.log.ScrollDown(1)
-			return m, nil
-		}
-		if m.menuCursor < len(m.helpTopics)-1 {
-			m.menuCursor++
-		}
-	case "pgup":
-		if m.helpBody != "" {
-			m.log.ScrollUp(m.log.Height() / 2)
-		}
-	case "pgdown":
-		if m.helpBody != "" {
-			m.log.ScrollDown(m.log.Height() / 2)
-		}
-	case "enter":
-		if m.helpBody != "" {
-			return m, nil
-		}
-		if m.menuCursor >= 0 && m.menuCursor < len(m.helpTopics) {
-			m.helpBody = docs.Format(m.helpTopics[m.menuCursor].Body)
-			m.log.SetContent(m.helpBody)
-			m.log.GotoTop()
-			if m.width > 0 && m.height > 3 {
-				m.log.SetWidth(m.width)
-				m.log.SetHeight(m.height - 3)
-			}
-		}
-	}
-	return m, nil
-}
-
 func (m Model) viewIntro() string {
 	var b strings.Builder
 	art := ""
@@ -487,57 +423,4 @@ func roleWord(p *pack.Pack) string {
 		return strings.ToLower(l)
 	}
 	return "temperament"
-}
-
-func (m Model) viewHelp() string {
-	hint := m.theme.Muted.Render("enter read   esc back")
-	if m.helpBody != "" {
-		src := ""
-		if m.menuCursor >= 0 && m.menuCursor < len(m.helpTopics) {
-			src = m.helpTopics[m.menuCursor].Source
-		}
-		head := m.theme.Title.Render("Help")
-		if src != "" {
-			head += "  (" + src + ")"
-		}
-		m.log.SetWidth(max(m.width, 20))
-		h := m.height - 3
-		if h < 5 {
-			h = 5
-		}
-		m.log.SetHeight(h)
-		return head + "\n" + m.log.View() + "\n" + m.theme.Muted.Render("pgup/pgdn scroll   esc back")
-	}
-	var b strings.Builder
-	b.WriteString(m.theme.Title.Render("Help") + "\n")
-	b.WriteString("Game docs live in the pack. Engine docs ship with Sudengine.\n\n")
-	last := ""
-	for i, t := range m.helpTopics {
-		if t.Source != last {
-			last = t.Source
-			label := "Engine"
-			if t.Source == docs.SourceGame {
-				label = "Game"
-			}
-			b.WriteString(m.theme.Accent.Render(label) + "\n")
-		}
-		cur := "  "
-		if i == m.menuCursor {
-			cur = "> "
-		}
-		line := fmt.Sprintf("%s%-12s  %s", cur, t.Key, t.Title)
-		if i == m.menuCursor {
-			line = m.theme.Cursor.Render(line)
-		}
-		b.WriteString(line + "\n")
-	}
-	b.WriteString("\n" + hint + "\n")
-	return b.String()
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

@@ -30,6 +30,7 @@ type Context struct {
 	LoadSnap      func(slot string) error
 	SavePack      func() error
 	ReloadScripts func() error
+	StartFight    func(mob *world.Entity)
 	BuildWalk     *bool
 	OnMoveFail    func(dir string) bool // buildwalk hook; return true if handled
 	After         func()                // push UI
@@ -70,6 +71,10 @@ func init() {
 	register("inventory", inventory)
 	register("equipment", equipment)
 	register("exits", exitsCmd)
+	register("search", searchCmd)
+	register("improve", improveCmd)
+	register("raise", raiseCmd)
+	register("train", trainCmd)
 	register("score", score)
 	register("help", help)
 	register("get", get)
@@ -133,7 +138,16 @@ func look(c *Context, p Parsed) {
 	DescribeRoom(c, true)
 }
 
+// EnterRoom is DescribeRoom plus a notice roll for hidden things.
+func EnterRoom(c *Context, verbose bool) {
+	showRoom(c, verbose, true)
+}
+
 func DescribeRoom(c *Context, verbose bool) {
+	showRoom(c, verbose, false)
+}
+
+func showRoom(c *Context, verbose, enter bool) {
 	room := c.World.RoomOf(c.Actor)
 	if room == nil {
 		c.Print("You are nowhere.")
@@ -148,11 +162,17 @@ func DescribeRoom(c *Context, verbose bool) {
 	if verbose && room.Long != "" {
 		c.Print("%s", strings.TrimSpace(room.Long))
 	}
+	if enter {
+		noticeOnEnter(c, room)
+	}
 	_, _ = c.Scripts.Call("on_look", c.Actor, room)
 	c.Print("%s", "")
 	hadContents := false
 	for _, e := range c.World.Children(room.ID) {
 		if e.ID == c.Actor.ID {
+			continue
+		}
+		if hiddenFrom(c.Actor, e) {
 			continue
 		}
 		switch e.Kind {
@@ -199,6 +219,16 @@ func examine(c *Context, p Parsed) {
 		c.Print("%s", err.Error())
 		return
 	}
+	if unseenInDark(c, e) {
+		c.Print("It's pitch black. You can't see a thing.")
+		return
+	}
+	if e.Hidden && !c.Actor.HasFound(e.ID) {
+		if !revealHidden(c, e) {
+			c.Print("You can't make it out.")
+			return
+		}
+	}
 	if e.Long != "" {
 		c.Print("%s", strings.TrimSpace(e.Long))
 	} else {
@@ -221,6 +251,26 @@ func examine(c *Context, p Parsed) {
 		}
 	}
 	_, _ = c.Scripts.Call("on_look", c.Actor, e)
+	if e.AI != nil && e.AI.WakesOnLook() {
+		e.SetFlag(e.AI.HostileFlag(), true)
+		if c.StartFight != nil && e.AI.Awake(e) {
+			c.StartFight(e)
+		}
+	}
+}
+
+func unseenInDark(c *Context, e *world.Entity) bool {
+	if e == nil || c.Actor == nil || c.World == nil {
+		return false
+	}
+	if e.Parent == c.Actor.ID {
+		return false
+	}
+	room := c.World.RoomOf(c.Actor)
+	if room == nil || c.World.RoomOf(e) != room {
+		return false
+	}
+	return !c.World.RoomIsLit(room)
 }
 
 func resolve(c *Context, token string, scopes ...world.Scope) (*world.Entity, error) {
@@ -291,6 +341,18 @@ func exitsCmd(c *Context, _ Parsed) {
 
 func score(c *Context, _ Parsed) {
 	c.Print("%s", c.Actor.Name)
+	if c.Pack != nil && c.Pack.RPG.Advancement.On() {
+		lvl := c.Actor.Level
+		if lvl < 1 {
+			lvl = 1
+		}
+		need := c.Pack.RPG.Advancement.Cost(lvl)
+		c.Print("  Level %d    experience %d / %d", lvl, c.Actor.XP, need)
+		if c.Actor.SkillPoints > 0 || c.Actor.AttrPoints > 0 {
+			c.Print("  Skill points %d    attribute points %d", c.Actor.SkillPoints, c.Actor.AttrPoints)
+			c.Print("  improve <skill>    raise <attribute>    train <skill>")
+		}
+	}
 	if c.Actor.OriginName != "" || c.Actor.RoleName != "" {
 		var bits []string
 		if c.Actor.OriginName != "" {
@@ -308,6 +370,10 @@ func score(c *Context, _ Parsed) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		r := c.Actor.Resources[k]
+		if c.Pack.RPG.Pile(k) {
+			c.Print("  %-12s %d", c.Pack.Lexicon.Label(k), r.Current)
+			continue
+		}
 		c.Print("  %-12s %d / %d", c.Pack.Lexicon.Label(k), r.Current, r.Max)
 	}
 	if len(c.Actor.Attrs) > 0 {
@@ -322,16 +388,14 @@ func score(c *Context, _ Parsed) {
 			c.Print("  %-12s %d", c.Pack.Lexicon.Label(k), c.Actor.Attrs[k])
 		}
 	}
-	if len(c.Actor.Skills) > 0 {
-		sk := make([]string, 0, len(c.Actor.Skills))
-		for k := range c.Actor.Skills {
-			sk = append(sk, k)
-		}
-		sort.Strings(sk)
+	if c.Pack != nil && len(c.Pack.RPG.Skills) > 0 {
 		c.Print("%s", "")
 		c.Print("Skills")
-		for _, k := range sk {
-			c.Print("  %-12s %d", c.Pack.Lexicon.Label(k), c.Actor.Skills[k])
+		for _, sk := range c.Pack.RPG.Skills {
+			c.Print("%s", skillLine(c, &sk))
+		}
+		if c.Pack.RPG.Advancement.On() {
+			c.Print("  train with no skill lists these. improve spends a point. train pays a trainer.")
 		}
 	}
 	if c.Pack != nil && len(c.Pack.RPG.Abilities) > 0 {
@@ -455,6 +519,10 @@ func get(c *Context, p Parsed) {
 			c.Print("%s", err.Error())
 			return
 		}
+	}
+	if e.Hidden && !c.Actor.HasFound(e.ID) {
+		c.Print("You don't see that here.")
+		return
 	}
 	if !e.Takeable || e.Kind != world.KindItem {
 		c.Print("You can't take %s.", e.Display())
@@ -665,6 +733,12 @@ func useAbility(c *Context, a *rpg.Ability, p Parsed) {
 		c.Print("That's still cooling down.")
 		return
 	}
+	for key, need := range a.Requires {
+		if c.Pack.RPG.Effective(c.Actor, key) < need {
+			c.Print("You need more %s for that.", c.Pack.Lexicon.Label(key))
+			return
+		}
+	}
 	for res, cost := range a.Cost {
 		if c.Actor.Res(res).Current < cost {
 			c.Print("You don't have enough %s.", c.Pack.Lexicon.Label(res))
@@ -759,10 +833,8 @@ func doorTarget(c *Context, rest string) (room *world.Entity, dir string, ex wor
 	return
 }
 
-func setExit(room *world.Entity, dir string, ex world.Exit) {
-	room.Exits[dir] = ex
-	ex.Dir = dir
-	room.Exits[dir] = ex
+func setExit(c *Context, room *world.Entity, dir string, ex world.Exit) {
+	world.MirrorExit(c.World, room, dir, ex)
 }
 
 func openCmd(c *Context, p Parsed) {
@@ -783,7 +855,7 @@ func openCmd(c *Context, p Parsed) {
 		return
 	}
 	ex.Closed = false
-	setExit(room, dir, ex)
+	setExit(c, room, dir, ex)
 	c.Print("You open the door to the %s.", dir)
 }
 
@@ -801,7 +873,7 @@ func closeCmd(c *Context, p Parsed) {
 		return
 	}
 	ex.Closed = true
-	setExit(room, dir, ex)
+	setExit(c, room, dir, ex)
 	c.Print("You close the door to the %s.", dir)
 }
 
@@ -821,7 +893,7 @@ func lockCmd(c *Context, p Parsed) {
 	ex.Locked = true
 	ex.Closed = true
 	ex.Door = true
-	setExit(room, dir, ex)
+	setExit(c, room, dir, ex)
 	c.Print("You lock the door to the %s.", dir)
 }
 
@@ -839,7 +911,7 @@ func unlockCmd(c *Context, p Parsed) {
 		return
 	}
 	ex.Locked = false
-	setExit(room, dir, ex)
+	setExit(c, room, dir, ex)
 	c.Print("You unlock the door to the %s.", dir)
 }
 
@@ -902,6 +974,11 @@ func flee(c *Context, _ Parsed) {
 	}
 	if len(dirs) == 0 {
 		c.Print("There's nowhere to run!")
+		return
+	}
+	if res, ok := rollCheck(c, "escape", c.Actor.Combat.Target); ok && !res.Success {
+		line := c.Pack.RPG.Decorate("You can't get clear.", 0, false, "", &res)
+		c.Print("%s", line)
 		return
 	}
 	c.Actor.Combat.Target = ""
@@ -1175,7 +1252,7 @@ func move(c *Context, dir string) {
 	_ = c.World.Move(c.Actor.ID, dest.ID)
 	_, _ = c.Scripts.Call("on_leave", c.Actor, old)
 	_, _ = c.Scripts.Call("on_enter", c.Actor, dest)
-	DescribeRoom(c, true)
+	EnterRoom(c, true)
 }
 
 func saveCmd(c *Context, p Parsed) {

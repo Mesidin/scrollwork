@@ -35,6 +35,9 @@ type Exit struct {
 type Attack struct {
 	Name   string `json:"name" yaml:"name"`
 	Damage string `json:"damage" yaml:"damage"`
+	Skill  string `json:"skill,omitempty" yaml:"skill,omitempty"`
+	Hit    string `json:"hit,omitempty" yaml:"hit,omitempty"`
+	Miss   string `json:"miss,omitempty" yaml:"miss,omitempty"`
 }
 
 type AI struct {
@@ -43,6 +46,14 @@ type AI struct {
 	AggroRange  int      `json:"aggro_range,omitempty" yaml:"aggro_range,omitempty"`
 	AssistTags  []string `json:"assist_tags,omitempty" yaml:"assist_tags,omitempty"`
 	WanderEvery int      `json:"wander_every,omitempty" yaml:"wander_every,omitempty"`
+	// Rooms limits wander and pursuit to these room ids. Empty means the whole map.
+	Rooms []ID `json:"rooms,omitempty" yaml:"rooms,omitempty"`
+	// Aggro is when a fight starts: enter (default), look, or flag.
+	Aggro string `json:"aggro,omitempty" yaml:"aggro,omitempty"`
+	// AggroFlag is the flag that wakes aggro look/flag. Default "hostile".
+	AggroFlag string `json:"aggro_flag,omitempty" yaml:"aggro_flag,omitempty"`
+	// Pursue follows a combat target through an open exit, still inside Rooms.
+	Pursue bool `json:"pursue,omitempty" yaml:"pursue,omitempty"`
 }
 
 type Combat struct {
@@ -62,6 +73,9 @@ type UseEffect struct {
 type Weapon struct {
 	Damage string `json:"damage,omitempty" yaml:"damage,omitempty"`
 	Verb   string `json:"verb,omitempty" yaml:"verb,omitempty"`
+	Skill  string `json:"skill,omitempty" yaml:"skill,omitempty"`
+	Hit    string `json:"hit,omitempty" yaml:"hit,omitempty"`
+	Miss   string `json:"miss,omitempty" yaml:"miss,omitempty"`
 }
 
 type Armor struct {
@@ -91,17 +105,21 @@ type Entity struct {
 	HasCoords bool            `json:"has_coords,omitempty" yaml:"has_coords,omitempty"`
 	Exits     map[string]Exit `json:"exits,omitempty" yaml:"exits,omitempty"`
 
-	Takeable  bool       `json:"takeable,omitempty" yaml:"takeable,omitempty"`
-	Container bool       `json:"container,omitempty" yaml:"container,omitempty"`
-	Wearable  bool       `json:"wearable,omitempty" yaml:"wearable,omitempty"`
-	Slot      string     `json:"slot,omitempty" yaml:"slot,omitempty"`
-	Closed    bool       `json:"item_closed,omitempty" yaml:"item_closed,omitempty"`
-	Locked    bool       `json:"item_locked,omitempty" yaml:"item_locked,omitempty"`
-	Key       string     `json:"item_key,omitempty" yaml:"item_key,omitempty"`
-	Use       *UseEffect `json:"use,omitempty" yaml:"use,omitempty"`
-	Weapon    *Weapon    `json:"weapon,omitempty" yaml:"weapon,omitempty"`
-	Armor     *Armor     `json:"armor,omitempty" yaml:"armor,omitempty"`
-	Value     int        `json:"value,omitempty" yaml:"value,omitempty"`
+	Takeable  bool           `json:"takeable,omitempty" yaml:"takeable,omitempty"`
+	Container bool           `json:"container,omitempty" yaml:"container,omitempty"`
+	Wearable  bool           `json:"wearable,omitempty" yaml:"wearable,omitempty"`
+	Slot      string         `json:"slot,omitempty" yaml:"slot,omitempty"`
+	Closed    bool           `json:"item_closed,omitempty" yaml:"item_closed,omitempty"`
+	Locked    bool           `json:"item_locked,omitempty" yaml:"item_locked,omitempty"`
+	Key       string         `json:"item_key,omitempty" yaml:"item_key,omitempty"`
+	Use       *UseEffect     `json:"use,omitempty" yaml:"use,omitempty"`
+	Weapon    *Weapon        `json:"weapon,omitempty" yaml:"weapon,omitempty"`
+	Armor     *Armor         `json:"armor,omitempty" yaml:"armor,omitempty"`
+	Value     int            `json:"value,omitempty" yaml:"value,omitempty"`
+	Mods      map[string]int `json:"mods,omitempty" yaml:"mods,omitempty"`
+	Hidden    bool           `json:"hidden,omitempty" yaml:"hidden,omitempty"`
+	Notice    int            `json:"notice,omitempty" yaml:"notice,omitempty"`
+	SearchDC  int            `json:"search,omitempty" yaml:"search,omitempty"`
 
 	AI     *AI               `json:"ai,omitempty" yaml:"ai,omitempty"`
 	Combat *Combat           `json:"combat,omitempty" yaml:"combat,omitempty"`
@@ -110,7 +128,9 @@ type Entity struct {
 	Attrs     map[string]int      `json:"attrs,omitempty" yaml:"attrs,omitempty"`
 	Resources map[string]Resource `json:"resources,omitempty" yaml:"resources,omitempty"`
 	Skills    map[string]int      `json:"skills,omitempty" yaml:"skills,omitempty"`
+	Oppose    map[string]int      `json:"oppose,omitempty" yaml:"oppose,omitempty"`
 	Flags     map[string]bool     `json:"flags,omitempty" yaml:"flags,omitempty"`
+	Found     map[string]bool     `json:"found,omitempty" yaml:"found,omitempty"`
 	Tags      []string            `json:"tags,omitempty" yaml:"tags,omitempty"`
 	Equipment map[string]ID       `json:"equipment,omitempty" yaml:"equipment,omitempty"`
 	Cooldown  map[string]int64    `json:"cooldown,omitempty" yaml:"cooldown,omitempty"`
@@ -122,6 +142,12 @@ type Entity struct {
 	OriginName string `json:"origin_name,omitempty" yaml:"origin_name,omitempty"`
 	RoleID     string `json:"role_id,omitempty" yaml:"role_id,omitempty"`
 	RoleName   string `json:"role_name,omitempty" yaml:"role_name,omitempty"`
+
+	XP          int  `json:"xp,omitempty" yaml:"xp,omitempty"`
+	Level       int  `json:"level,omitempty" yaml:"level,omitempty"`
+	SkillPoints int  `json:"skill_points,omitempty" yaml:"skill_points,omitempty"`
+	AttrPoints  int  `json:"attr_points,omitempty" yaml:"attr_points,omitempty"`
+	Trainer     bool `json:"trainer,omitempty" yaml:"trainer,omitempty"`
 }
 
 type World struct {
@@ -188,6 +214,20 @@ func (e *Entity) HasKeyword(token string) bool {
 
 func (e *Entity) HasFlag(name string) bool {
 	return e.Flags != nil && e.Flags[name]
+}
+
+func (e *Entity) HasFound(id ID) bool {
+	return e != nil && e.Found != nil && e.Found[string(id)]
+}
+
+func (e *Entity) MarkFound(id ID) {
+	if e == nil {
+		return
+	}
+	if e.Found == nil {
+		e.Found = map[string]bool{}
+	}
+	e.Found[string(id)] = true
 }
 
 func (e *Entity) SetFlag(name string, v bool) {
@@ -286,6 +326,24 @@ func (e *Entity) Clone() *Entity {
 			cp.Skills[k] = v
 		}
 	}
+	if e.Mods != nil {
+		cp.Mods = make(map[string]int, len(e.Mods))
+		for k, v := range e.Mods {
+			cp.Mods[k] = v
+		}
+	}
+	if e.Oppose != nil {
+		cp.Oppose = make(map[string]int, len(e.Oppose))
+		for k, v := range e.Oppose {
+			cp.Oppose[k] = v
+		}
+	}
+	if e.Found != nil {
+		cp.Found = make(map[string]bool, len(e.Found))
+		for k, v := range e.Found {
+			cp.Found[k] = v
+		}
+	}
 	if e.Flags != nil {
 		cp.Flags = make(map[string]bool, len(e.Flags))
 		for k, v := range e.Flags {
@@ -307,6 +365,7 @@ func (e *Entity) Clone() *Entity {
 	if e.AI != nil {
 		ai := *e.AI
 		ai.AssistTags = append([]string{}, e.AI.AssistTags...)
+		ai.Rooms = append([]ID{}, e.AI.Rooms...)
 		cp.AI = &ai
 	}
 	if e.Combat != nil {

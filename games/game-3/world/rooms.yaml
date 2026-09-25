@@ -1,0 +1,10 @@
+- id: game-3.start
+  name: Empty Room
+  short: ""
+  long: A blank room waiting to be described.
+  exits: {}
+  items: []
+  npcs: []
+  extras: []
+  flags: []
+  scripts: ""

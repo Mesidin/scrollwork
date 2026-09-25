@@ -69,7 +69,16 @@ Pack abilities register as extra verbs (for example `steady` in The Old House).
 ## Meta
 
 ```
-help [topic]
+help
+help <topic>
+help <topic> <section>
+search
+stats
+inventory
+equipment
+improve <skill>
+raise <attribute>
+train <skill>
 save [slot]
 quit
 ```

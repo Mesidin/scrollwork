@@ -2,6 +2,11 @@
 // The TUI speaks only these types; later a network transport can JSON-encode them.
 package protocol
 
+import (
+	"fmt"
+	"strings"
+)
+
 type Mode string
 
 const (
@@ -61,6 +66,37 @@ type ResourceView struct {
 	Key          string
 	Label        string
 	Current, Max int
+	Pile         bool   // not a capped pool; show the amount alone
+	Show         string // bar, side, or sheet
+}
+
+// Text is one resource for a pane. A bar is a meter. A pile is an amount.
+func (r ResourceView) Text() string {
+	if r.Pile {
+		return fmt.Sprintf("%s %d", r.Label, r.Current)
+	}
+	if r.Show == "bar" {
+		return fmt.Sprintf("%s %s %d/%d", r.Label, Meter(r.Current, r.Max, 10), r.Current, r.Max)
+	}
+	return fmt.Sprintf("%s %d/%d", r.Label, r.Current, r.Max)
+}
+
+// Meter draws a filled bar of width cells.
+func Meter(current, max, width int) string {
+	if width < 1 {
+		width = 10
+	}
+	filled := 0
+	if max > 0 && current > 0 {
+		filled = current * width / max
+		if filled < 1 {
+			filled = 1
+		}
+		if filled > width {
+			filled = width
+		}
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }
 
 type VitalsEvent struct {

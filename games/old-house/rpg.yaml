@@ -4,6 +4,14 @@ attributes:
     label: Body
   - key: will
     label: Will
+    base: 1
+checks:
+  escape:
+    roll: 2d6
+    mode: over
+    actor: [attr.will]
+    gear: [escape]
+    difficulty: 7
 resources:
   - key: hp
     label: Grit
@@ -27,6 +35,8 @@ roles:
   - id: careful
     name: Careful
     description: You notice dust, doors, and what people will not say.
+    attrs:
+      will: 1
     resources:
       calm: 14
   - id: reckless

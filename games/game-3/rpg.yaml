@@ -1,0 +1,43 @@
+attributes:
+    - key: body
+      label: Body
+      base: 0
+      max: 0
+resources:
+    - key: hp
+      label: HP
+      max: 20
+      regen: 0
+      regen_every: 0
+      pile: false
+      show: ""
+skills: []
+races: []
+roles: []
+slots:
+    - wield
+    - body
+primary_resource: hp
+chargen:
+    enabled: false
+    ask_name: false
+death:
+    npc:
+        corpse: null
+        drop_inventory: null
+    player:
+        primary_pct: null
+        keep_items: null
+checks: {}
+feedback:
+    rolls: false
+    numbers: false
+advancement:
+    enabled: false
+    xp: 0
+    xp_step: 0
+    skill_points: 0
+    attribute_every: 0
+    resources: {}
+    train_cost: 0
+    currency: ""

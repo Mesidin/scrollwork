@@ -1,0 +1,15 @@
+- id: mend
+  name: Mend
+  verb: mend
+  cost:
+    focus: 2
+  cooldown: 8
+  target: self
+  requires:
+    mind: 2
+  effects:
+    - heal:
+        resource: vigor
+        dice: 1d4
+  messages:
+    self: You press a palm to the hurt and the pain steps back.

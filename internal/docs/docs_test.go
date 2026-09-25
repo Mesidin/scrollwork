@@ -20,20 +20,23 @@ func TestMergePackWins(t *testing.T) {
 		"playing": "# Local playing\n\nThis pack overrides.",
 		"house":   "# The House\n\nA local topic.",
 	})
-	var playing, house bool
+	var gamePlaying, enginePlaying, house int
 	for _, tpc := range merged {
-		if tpc.Key == "playing" {
-			playing = true
-			if tpc.Source != SourceGame {
-				t.Fatal("pack should win on playing")
-			}
+		if tpc.Key == "playing" && tpc.Source == SourceGame {
+			gamePlaying++
 		}
-		if tpc.Key == "house" {
-			house = true
+		if tpc.Key == "playing" && tpc.Source == SourceEngine {
+			enginePlaying++
+		}
+		if tpc.Key == "house" && tpc.Source == SourceGame {
+			house++
 		}
 	}
-	if !playing || !house {
-		t.Fatal(merged)
+	if gamePlaying != 1 || enginePlaying != 1 || house != 1 {
+		t.Fatalf("game playing %d, engine playing %d, house %d", gamePlaying, enginePlaying, house)
+	}
+	if merged[0].Key != "house" && merged[0].Key != "playing" {
+		t.Fatalf("pack topics should lead, got %s", merged[0].Key)
 	}
 }
 

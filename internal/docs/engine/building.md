@@ -2,6 +2,8 @@
 
 You never recompile to add content. A pack is a folder of YAML, Markdown, and optional Lua.
 
+In the manual, each heading below is its own page. Up and down move between those pages. Page Up and Page Down scroll the page.
+
 There are two ways to work:
 
 - **Files** (this page) — edit `games/<id>/` in a text editor, then `sudengine play <id>`.
@@ -88,7 +90,37 @@ See `help items`.
     key: I dropped it in the parlor.
 ```
 
-AI profiles: `sentinel`, `wander`, `aggressive`, `coward`. Combat block is optional. `ask maid about key` uses `topics`.
+AI profiles: `sentinel` (stays), `wander` (moves), `aggressive` (attacks), `coward` (runs when hurt). An aggressive mobile stays in its room unless you also set `wander: true`.
+
+`rooms` keeps both wander and pursuit inside those room ids. `aggro: look` waits until the player examines it. `aggro: flag` waits until the `hostile` flag is set (from `set_flag` in Lua, or any other story event). `pursue: true` follows the player through an open exit and stops at the edge of `rooms`.
+
+```
+ai:
+  profile: aggressive
+  wander: true
+  rooms: [house.wine, house.cellar]
+  pursue: true
+```
+
+A creature that should not attack the moment you walk in:
+
+```
+ai:
+  profile: aggressive
+  aggro: look
+  pursue: true
+  rooms: [house.cistern, house.cellar]
+```
+
+Combat block is optional. `ask maid about key` uses `topics`.
+
+An attack may set `hit` and `miss` lines. `{Name}` is the attacker, `{name}` the target, `{damage}` the amount, `{resource}` the bar's label. `skill: melee` adds damage when that skill has `damage_every`. `oppose.escape` and `oppose.hit` are the difficulties this mobile imposes. `xp` is awarded if the pack turned advancement on. `trainer: true` marks someone who sells skill ranks.
+
+## Checks, noticing, advancement
+
+See `help systems` for the roll, hidden things, and levels. Short version: omit `checks`, `feedback`, and `advancement` and the game does not roll, does not print brackets, and does not level. A worn item's `mods` map feeds any check that lists that key under `gear`. Hidden extras and items use `notice` and `search`.
+
+`stats`, `inventory`, and `equipment` are the sheet. After a level, `improve` and `raise` spend points. `train` pays a trainer.
 
 ## Systems (rpg.yaml)
 
@@ -100,9 +132,24 @@ Most content needs zero Lua. For a whispering portrait or a boss phase, add `scr
 
 Sandbox: no `io` or `os`. Hooks: `on_look`, `on_use`, `on_ask`, `on_enter`, `on_leave`, `on_death`, `on_tick`. Return `true` from `on_use` / `on_ask` to skip the YAML default. Then `reload` in build mode.
 
+## Settings and rules
+
+The builder edits the world: rooms, exits, descriptions, prototypes, and who is standing in a room. It does not edit the rules of the whole game.
+
+Change those in a text editor, then start the session again.
+
+- `pack.yaml` — title, author, tick, start room, intro, which panes show in play
+- `lexicon.yaml` — the words a player reads (hp shown as Grit)
+- `rpg.yaml` — resources, attributes, roles, character creation
+- `abilities/*.yaml` — extra verbs such as steady
+- `help/*.md` — the game manual
+- `scripts/*.lua` — special behavior
+
+`save pack` writes rooms, items, and people. It also rewrites `pack.yaml`, `lexicon.yaml`, and `rpg.yaml` from the copy loaded at startup, so comments in those files can disappear. It leaves `help/`, `intro.txt`, and Lua alone.
+
 ## In-engine commands
 
-`sudengine build <id>`:
+`sudengine build <id>`. The side pane shows a map centered on the room you are in (`@`), then the commands you type most often.
 
 ```
 dig north Kitchen     create + link + walk

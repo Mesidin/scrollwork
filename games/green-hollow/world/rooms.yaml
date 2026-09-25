@@ -1,0 +1,63 @@
+- id: hollow.square
+  name: Village Square
+  short: the square
+  long: |
+    Packed earth, a dry well, and the sergeant's bench under a plane tree.
+    The lane runs east toward the trees.
+  x: 0
+  y: 0
+  z: 0
+  flags: [outdoor]
+  npcs: [hollow.bram]
+  exits:
+    east:
+      to: hollow.lane
+
+- id: hollow.lane
+  name: East Lane
+  short: the lane
+  long: |
+    A cart track between low walls. Someone left a sword and a cloak
+    where the grass starts.
+  x: 1
+  y: 0
+  z: 0
+  flags: [outdoor]
+  items: [hollow.sword, hollow.cloak]
+  exits:
+    west:
+      to: hollow.square
+    north:
+      to: hollow.thicket
+
+- id: hollow.thicket
+  name: Thicket
+  short: the thicket
+  long: |
+    Hazel and thorn. The path north is a darker green. Something glints
+    if you already know to look.
+  x: 1
+  y: 1
+  z: 0
+  flags: [outdoor]
+  npcs: [hollow.wolf, hollow.wolf-2]
+  items: [hollow.ring]
+  exits:
+    south:
+      to: hollow.lane
+    north:
+      to: hollow.camp
+
+- id: hollow.camp
+  name: Brigand Camp
+  short: the camp
+  long: |
+    A dead fire and a stolen pot. The thicket closes in behind you.
+  x: 1
+  y: 2
+  z: 0
+  flags: [outdoor]
+  npcs: [hollow.brigand]
+  exits:
+    south:
+      to: hollow.thicket

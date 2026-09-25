@@ -1,0 +1,15 @@
+id: game-3
+title: game-3
+author: ""
+tick_ms: 250
+combat_every: 4
+start_room: game-3.start
+ui:
+    panes:
+        - output
+        - map
+        - vitals
+intro:
+    art: ""
+    subtitle: ""
+    blurb: ""

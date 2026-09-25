@@ -159,6 +159,58 @@ func (h *Host) bind(L *lua.LState, actor, self *world.Entity) {
 		return 0
 	}))
 	L.SetGlobal("print", L.GetGlobal("echo"))
+	L.SetGlobal("set_flag", L.NewFunction(func(L *lua.LState) int {
+		h.setFlag(L, self)
+		return 0
+	}))
+}
+
+func (h *Host) setFlag(L *lua.LState, self *world.Entity) {
+	top := L.GetTop()
+	if top < 1 || h.World == nil {
+		return
+	}
+	target := self
+	name := L.ToString(1)
+	on := true
+	switch top {
+	case 1:
+		// set_flag("hostile")
+	case 2:
+		if L.Get(2).Type() == lua.LTBool {
+			on = L.ToBool(2)
+		} else {
+			target = h.findEntity(L.ToString(1))
+			name = L.ToString(2)
+		}
+	default:
+		target = h.findEntity(L.ToString(1))
+		name = L.ToString(2)
+		on = L.ToBool(3)
+	}
+	if target == nil || name == "" {
+		return
+	}
+	target.SetFlag(name, on)
+}
+
+func (h *Host) findEntity(token string) *world.Entity {
+	if h.World == nil || strings.TrimSpace(token) == "" {
+		return nil
+	}
+	if e := h.World.Get(world.ID(token)); e != nil {
+		return e
+	}
+	var hit *world.Entity
+	for _, e := range h.World.Entities {
+		if e.HasKeyword(token) {
+			hit = e
+			if e.Kind == world.KindMobile {
+				return e
+			}
+		}
+	}
+	return hit
 }
 
 func entityTable(L *lua.LState, e *world.Entity) lua.LValue {

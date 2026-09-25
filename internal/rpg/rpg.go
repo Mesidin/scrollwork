@@ -5,6 +5,8 @@ import "sudengine/internal/world"
 type AttrDef struct {
 	Key   string `yaml:"key"`
 	Label string `yaml:"label"`
+	Base  int    `yaml:"base"`
+	Max   int    `yaml:"max"`
 }
 
 type ResDef struct {
@@ -13,11 +15,17 @@ type ResDef struct {
 	Max        int    `yaml:"max"`
 	Regen      int    `yaml:"regen"`
 	RegenEvery int    `yaml:"regen_every"`
+	Pile       bool   `yaml:"pile"` // a purse, not a pool
+	// Show is bar (status line), side (side pane only), or sheet (stats only).
+	Show string `yaml:"show"`
 }
 
 type SkillDef struct {
-	Key   string `yaml:"key"`
-	Label string `yaml:"label"`
+	Key         string `yaml:"key"`
+	Label       string `yaml:"label"`
+	Parent      string `yaml:"parent"`
+	Max         int    `yaml:"max"`
+	DamageEvery int    `yaml:"damage_every"`
 }
 
 type Bundle struct {
@@ -53,6 +61,7 @@ type Ability struct {
 	Effects  []Effect          `yaml:"effects"`
 	Messages map[string]string `yaml:"messages"`
 	Scripts  string            `yaml:"scripts"`
+	Requires map[string]int    `yaml:"requires"`
 }
 
 type Chargen struct {
@@ -61,16 +70,19 @@ type Chargen struct {
 }
 
 type Schema struct {
-	Attributes      []AttrDef  `yaml:"attributes"`
-	Resources       []ResDef   `yaml:"resources"`
-	Skills          []SkillDef `yaml:"skills"`
-	Races           []Bundle   `yaml:"races"`
-	Roles           []Bundle   `yaml:"roles"`
-	Slots           []string   `yaml:"slots"`
-	PrimaryResource string     `yaml:"primary_resource"`
-	Chargen         Chargen    `yaml:"chargen"`
-	Death           Death      `yaml:"death"`
-	Abilities       []Ability  `yaml:"-"`
+	Attributes      []AttrDef        `yaml:"attributes"`
+	Resources       []ResDef         `yaml:"resources"`
+	Skills          []SkillDef       `yaml:"skills"`
+	Races           []Bundle         `yaml:"races"`
+	Roles           []Bundle         `yaml:"roles"`
+	Slots           []string         `yaml:"slots"`
+	PrimaryResource string           `yaml:"primary_resource"`
+	Chargen         Chargen          `yaml:"chargen"`
+	Death           Death            `yaml:"death"`
+	Checks          map[string]Check `yaml:"checks"`
+	Feedback        Feedback         `yaml:"feedback"`
+	Advancement     Advancement      `yaml:"advancement"`
+	Abilities       []Ability        `yaml:"-"`
 }
 
 type Death struct {
@@ -149,6 +161,38 @@ func (s Schema) Primary() string {
 	return "hp"
 }
 
+func (s Schema) Pile(key string) bool {
+	for _, r := range s.Resources {
+		if r.Key == key {
+			return r.Pile
+		}
+	}
+	return false
+}
+
+// Show resolves where a resource appears.
+// bar is the status line, side is the side pane, sheet is stats only.
+// The primary pool defaults to bar. Other pools and piles default to side.
+func (s Schema) Show(key string) string {
+	for _, r := range s.Resources {
+		if r.Key != key {
+			continue
+		}
+		switch r.Show {
+		case "bar", "side", "sheet":
+			return r.Show
+		}
+		if r.Pile {
+			return "side"
+		}
+		if key == s.Primary() {
+			return "bar"
+		}
+		return "side"
+	}
+	return "sheet"
+}
+
 func (s Schema) Label(key string, lexicon map[string]string) string {
 	if lexicon != nil {
 		if l, ok := lexicon[key]; ok && l != "" {
@@ -185,7 +229,7 @@ func ApplyDefaults(e *world.Entity, s Schema) {
 	}
 	for _, a := range s.Attributes {
 		if _, ok := e.Attrs[a.Key]; !ok {
-			e.Attrs[a.Key] = 0
+			e.Attrs[a.Key] = a.Base
 		}
 	}
 	for _, r := range s.Resources {
@@ -219,8 +263,8 @@ func ApplyBundle(e *world.Entity, b Bundle) {
 	}
 	for k, v := range b.Resources {
 		r := e.Resources[k]
-		r.Max = v
 		r.Current = v
+		r.Max = v
 		e.Resources[k] = r
 	}
 	for k, v := range b.Skills {
