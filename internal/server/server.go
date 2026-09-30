@@ -16,6 +16,7 @@ import (
 	"sudengine/internal/render"
 	"sudengine/internal/save"
 	"sudengine/internal/script"
+	"sudengine/internal/weather"
 	"sudengine/internal/world"
 )
 
@@ -49,6 +50,7 @@ type Server struct {
 	Scripts *script.Host
 	Combat  *combat.Engine
 	Session *Session
+	Env     *weather.Environment
 	rng     *rand.Rand
 }
 
@@ -110,7 +112,18 @@ func Launch(opt Options) (*Server, *Session, error) {
 		World:   w,
 		Scripts: h,
 		Session: sess,
+		Env:     weather.New(p.Meta.TickMS, p.Time, p.Weather),
 		rng:     rand.New(rand.NewSource(seed)),
+	}
+	if w.WeatherState != "" {
+		srv.Env.CurrentWeather = w.WeatherState
+	}
+	srv.Env.Sync(w.Tick)
+	w.IsAmbientDark = func(w *world.World, room *world.Entity) bool {
+		return srv.Env.IsAmbientDark(room.HasFlag)
+	}
+	w.IsAmbientLit = func(w *world.World, room *world.Entity) bool {
+		return srv.Env.IsAmbientLit(room.HasFlag)
 	}
 	srv.Combat = &combat.Engine{
 		RNG:     srv.rng,
@@ -122,6 +135,10 @@ func Launch(opt Options) (*Server, *Session, error) {
 				sess.Send(protocol.TextEvent{Channel: protocol.Channel(channel), Text: text})
 			}
 		},
+	}
+	srv.Combat.HitMod = srv.outdoorHitPenalty
+	if srv.Env.Extinguishes(true) {
+		srv.douseOutdoorFlames()
 	}
 	h.Echo = func(actor *world.Entity, text string) {
 		if actor != nil && actor.ID == sess.PlayerID {
@@ -199,6 +216,7 @@ func (s *Server) ctx() *commands.Context {
 		Scripts:   s.Scripts,
 		Tick:      s.World.Tick,
 		RNG:       s.rng,
+		Env:       s.Env,
 		BuildWalk: &sess.BuildWalk,
 		Tell: func(ch protocol.Channel, text string) {
 			sess.Send(protocol.TextEvent{Channel: ch, Text: text})
@@ -215,6 +233,26 @@ func (s *Server) ctx() *commands.Context {
 			s.World = w
 			s.Scripts.World = w
 			sess.PlayerID = w.PlayerID
+			if s.Env != nil {
+				if w.WeatherState != "" {
+					s.Env.CurrentWeather = w.WeatherState
+				} else {
+					s.Env.CurrentWeather = s.Env.WeatherConfig.Initial
+					if s.Env.CurrentWeather == "" {
+						s.Env.CurrentWeather = "clear"
+					}
+				}
+				s.Env.Sync(w.Tick)
+			}
+			w.IsAmbientDark = func(w *world.World, room *world.Entity) bool {
+				return s.Env.IsAmbientDark(room.HasFlag)
+			}
+			w.IsAmbientLit = func(w *world.World, room *world.Entity) bool {
+				return s.Env.IsAmbientLit(room.HasFlag)
+			}
+			if s.Env != nil && s.Env.Extinguishes(true) {
+				s.douseOutdoorFlames()
+			}
 			return nil
 		},
 		SavePack: func() error {
@@ -301,14 +339,97 @@ func (s *Server) afterCommand() {
 func (s *Server) tick() {
 	s.World.Tick++
 	now := s.World.Tick
+	s.environment()
 	s.regen()
 	s.ai()
-	s.Combat.Tick(s.World, now)
+	if s.Combat != nil {
+		s.Combat.Tick(s.World, now)
+	}
 	s.reapDead()
 	// only push vitals/combat on tick to avoid flooding the log
 	s.pushVitals()
 	s.pushCombat()
 	s.pushPrompt()
+}
+
+func (s *Server) outdoorHitPenalty(att *world.Entity) int {
+	if s == nil || s.Env == nil || s.World == nil || att == nil {
+		return 0
+	}
+	room := s.World.RoomOf(att)
+	if room == nil {
+		return 0
+	}
+	return -s.Env.CombatModifier(room.Outdoor())
+}
+
+func (s *Server) douseOutdoorFlames() {
+	if s == nil || s.Env == nil || s.World == nil || !s.Env.Extinguishes(true) {
+		return
+	}
+	pl := s.World.Player()
+	here := s.World.RoomOf(pl)
+	lostHere := false
+	for _, e := range s.World.Entities {
+		if e.Kind != world.KindRoom || e.Underground() || !e.Outdoor() {
+			continue
+		}
+		gone := s.World.ExtinguishToggleLights(e)
+		if here != nil && e.ID == here.ID && len(gone) > 0 {
+			lostHere = true
+		}
+	}
+	if lostHere && s.Session != nil {
+		s.Session.Send(protocol.TextEvent{
+			Channel: protocol.ChanAlert,
+			Text:    weather.FlameOutLine,
+		})
+	}
+}
+
+func (s *Server) environment() {
+	if s.Env == nil {
+		return
+	}
+	prev := s.World.WeatherState
+	broadcasts := s.Env.Tick(s.World.Tick, s.rng)
+	changed := prev != s.Env.CurrentWeather
+	if changed {
+		s.World.WeatherState = s.Env.CurrentWeather
+	}
+	if changed && s.Env.Extinguishes(true) {
+		s.douseOutdoorFlames()
+	}
+	if len(broadcasts) == 0 {
+		return
+	}
+	pl := s.World.Player()
+	if pl == nil {
+		return
+	}
+	room := s.World.RoomOf(pl)
+	if room == nil || room.Underground() {
+		return
+	}
+	isOutdoor := room.Outdoor()
+	isWindowed := room.Windowed()
+
+	for _, b := range broadcasts {
+		var text string
+		if isOutdoor && b.OutdoorText != "" {
+			text = b.OutdoorText
+		} else if isWindowed && b.WindowText != "" {
+			text = b.WindowText
+		} else if !isOutdoor && !isWindowed && b.IndoorText != "" {
+			text = b.IndoorText
+		}
+		if text != "" {
+			s.Session.Send(protocol.TextEvent{
+				Channel: protocol.ChanAlert,
+				Text:    text,
+			})
+		}
+	}
 }
 
 func (s *Server) regen() {

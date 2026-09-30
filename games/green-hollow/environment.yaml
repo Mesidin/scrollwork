@@ -1,0 +1,19 @@
+# Environment configuration for Green Hollow
+# Scaled Day/Night and Weather systems:
+# Level 0 = None (disabled)
+# Level 1 = Cosmetic (ambient clock, phase/weather echoes, time/weather commands)
+# Level 2 = Lighting & Sensory (night makes outdoors dark, storms dim light, perception modifiers)
+# Level 3 = Mechanical (outdoor hit penalties, flames blown out, night notice penalty)
+#
+# The square is outdoor and lit, so the sergeant stays visible after dark.
+# The cottage is windowed. The lantern on the lane lights the thicket and camp.
+
+time:
+  level: 1
+  minutes_per_day: 24
+  start_hour: 8
+
+weather:
+  level: 1
+  initial: clear
+  change_interval: 240

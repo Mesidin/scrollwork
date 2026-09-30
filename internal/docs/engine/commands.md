@@ -22,6 +22,14 @@ score / stats / sc
 equipment / eq
 ```
 
+## Environment
+
+```
+time / clock            current time and period of day
+weather / sky           weather conditions and sky view
+look sky                observe the sky or through a window
+```
+
 ## Things
 
 ```

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"sudengine/internal/rpg"
+	"sudengine/internal/weather"
 	"sudengine/internal/world"
 
 	"gopkg.in/yaml.v3"
@@ -157,6 +158,8 @@ type Pack struct {
 	Meta      Meta
 	Lexicon   Lexicon
 	RPG       rpg.Schema
+	Time      weather.TimeConfig
+	Weather   weather.WeatherConfig
 	Rooms     []RoomYAML
 	Items     []ItemYAML
 	NPCs      []NPCYAML
@@ -245,6 +248,17 @@ func Load(dir string) (*Pack, error) {
 	}
 	_ = unmarshalFile(filepath.Join(dir, "lexicon.yaml"), &p.Lexicon)
 	_ = unmarshalFile(filepath.Join(dir, "rpg.yaml"), &p.RPG)
+	type EnvironmentYAML struct {
+		Time    weather.TimeConfig    `yaml:"time"`
+		Weather weather.WeatherConfig `yaml:"weather"`
+	}
+	var env EnvironmentYAML
+	_ = unmarshalFile(filepath.Join(dir, "environment.yaml"), &env)
+	if env.Time.Level == 0 && env.Weather.Level == 0 {
+		_ = unmarshalFile(filepath.Join(dir, "weather.yaml"), &env)
+	}
+	p.Time = env.Time
+	p.Weather = env.Weather
 	if p.Lexicon.Labels == nil {
 		p.Lexicon.Labels = map[string]string{}
 	}

@@ -1,3 +1,14 @@
+- id: hollow.lantern
+  keywords: [lantern, lamp, light]
+  name: tin lantern
+  short: a tin lantern
+  long: A tin lantern with a shutter. It still lights.
+  takeable: true
+  use:
+    toggle_flag: light
+    message: The lantern burns steadily.
+    message_off: You shutter the lantern.
+
 - id: hollow.sword
   keywords: [sword, blade]
   name: short sword

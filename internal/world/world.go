@@ -151,13 +151,16 @@ type Entity struct {
 }
 
 type World struct {
-	Entities  map[ID]*Entity `json:"entities"`
-	Protos    map[ID]*Entity `json:"protos"`
-	PlayerID  ID             `json:"player_id"`
-	StartRoom ID             `json:"start_room"`
-	Tick      int64          `json:"tick"`
-	NextSeq   int            `json:"next_seq"`
-	PackID    string         `json:"pack_id"`
+	Entities      map[ID]*Entity                    `json:"entities"`
+	Protos        map[ID]*Entity                    `json:"protos"`
+	PlayerID      ID                                `json:"player_id"`
+	StartRoom     ID                                `json:"start_room"`
+	Tick          int64                             `json:"tick"`
+	NextSeq       int                               `json:"next_seq"`
+	PackID        string                            `json:"pack_id"`
+	WeatherState  string                            `json:"weather_state,omitempty"`
+	IsAmbientDark func(w *World, room *Entity) bool `json:"-"`
+	IsAmbientLit  func(w *World, room *Entity) bool `json:"-"`
 }
 
 func New() *World {
@@ -213,7 +216,22 @@ func (e *Entity) HasKeyword(token string) bool {
 }
 
 func (e *Entity) HasFlag(name string) bool {
-	return e.Flags != nil && e.Flags[name]
+	return e != nil && e.Flags != nil && e.Flags[name]
+}
+
+// Outdoor is open to the sky. Packs may say outdoor or outdoors.
+func (e *Entity) Outdoor() bool {
+	return e.HasFlag("outdoor") || e.HasFlag("outdoors")
+}
+
+// Windowed has a view of the sky. sheltered is the same flag.
+func (e *Entity) Windowed() bool {
+	return e.HasFlag("windowed") || e.HasFlag("sheltered")
+}
+
+// Underground is shut off from the sky and the clock's daylight.
+func (e *Entity) Underground() bool {
+	return e.HasFlag("underground")
 }
 
 func (e *Entity) HasFound(id ID) bool {
@@ -587,6 +605,35 @@ func (w *World) Match(actor *Entity, token string, scopes ...Scope) (*Entity, []
 	return nil, cands
 }
 
+// ExtinguishToggleLights clears light on items in the room that relight with
+// use.toggle_flag light. Permanent light flags are left alone.
+func (w *World) ExtinguishToggleLights(room *Entity) []*Entity {
+	if w == nil || room == nil {
+		return nil
+	}
+	var out []*Entity
+	seen := map[ID]bool{}
+	var walk func(*Entity)
+	walk = func(e *Entity) {
+		if e == nil || seen[e.ID] {
+			return
+		}
+		seen[e.ID] = true
+		if e.Use != nil && e.Use.ToggleFlag == "light" && e.HasFlag("light") {
+			e.SetFlag("light", false)
+			out = append(out, e)
+		}
+		for _, c := range w.Children(e.ID) {
+			walk(c)
+		}
+		for _, id := range e.Equipment {
+			walk(w.Get(id))
+		}
+	}
+	walk(room)
+	return out
+}
+
 func (w *World) CarryingLight(e *Entity) bool {
 	if e == nil {
 		return false
@@ -610,6 +657,17 @@ func (w *World) CarryingLight(e *Entity) bool {
 func (w *World) RoomIsLit(room *Entity) bool {
 	if room == nil {
 		return true
+	}
+	if w.IsAmbientLit != nil && w.IsAmbientLit(w, room) {
+		return true
+	}
+	if w.IsAmbientDark != nil && w.IsAmbientDark(w, room) {
+		for _, c := range w.Children(room.ID) {
+			if w.CarryingLight(c) {
+				return true
+			}
+		}
+		return false
 	}
 	if !room.HasFlag("dark") {
 		return true

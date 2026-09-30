@@ -12,6 +12,7 @@ import (
 	"sudengine/internal/protocol"
 	"sudengine/internal/rpg"
 	"sudengine/internal/script"
+	"sudengine/internal/weather"
 	"sudengine/internal/world"
 )
 
@@ -23,6 +24,7 @@ type Context struct {
 	Scripts *script.Host
 	Tick    int64
 	RNG     *rand.Rand
+	Env     *weather.Environment
 
 	Tell          func(channel protocol.Channel, text string)
 	Quit          func()
@@ -101,6 +103,9 @@ func init() {
 	register("save", saveCmd)
 	register("quit", quitCmd)
 	register("who", who)
+	register("time", timeCmd)
+	register("weather", weatherCmd)
+	register("sky", weatherCmd)
 	for _, d := range []string{"north", "south", "east", "west", "up", "down", "northeast", "northwest", "southeast", "southwest", "in", "out"} {
 		dir := d
 		register(dir, func(c *Context, _ Parsed) { move(c, dir) })
@@ -154,6 +159,9 @@ func showRoom(c *Context, verbose, enter bool) {
 		return
 	}
 	c.RoomTitle(room.Name)
+	if enter {
+		blowOutFlames(c)
+	}
 	lit := c.World.RoomIsLit(room)
 	if !lit {
 		c.Print("It's pitch black. You can't see a thing.")
@@ -212,6 +220,10 @@ func exitList(room *world.Entity) string {
 func examine(c *Context, p Parsed) {
 	if p.Rest == "" {
 		c.Print("Examine what?")
+		return
+	}
+	if strings.EqualFold(p.Rest, "sky") {
+		weatherCmd(c, p)
 		return
 	}
 	e, err := resolve(c, p.Rest, world.ScopeInventory, world.ScopeEquipment, world.ScopeRoom, world.ScopeSelf)
@@ -702,6 +714,10 @@ func use(c *Context, p Parsed) {
 	}
 	if e.Use != nil && e.Use.ToggleFlag != "" {
 		on := e.HasFlag(e.Use.ToggleFlag)
+		if !on && e.Use.ToggleFlag == "light" && flameWontCatch(c) {
+			c.Print("%s", weather.FlameSnuffLine)
+			return
+		}
 		e.SetFlag(e.Use.ToggleFlag, !on)
 		if on {
 			msg := e.Use.MessageOff
@@ -1293,6 +1309,53 @@ func quitCmd(c *Context, _ Parsed) {
 	}
 }
 
+func blowOutFlames(c *Context) {
+	if c == nil || c.Env == nil || c.World == nil || c.Actor == nil {
+		return
+	}
+	room := c.World.RoomOf(c.Actor)
+	if room == nil || !c.Env.Extinguishes(room.Outdoor()) {
+		return
+	}
+	if len(c.World.ExtinguishToggleLights(room)) > 0 {
+		c.Alert("%s", weather.FlameOutLine)
+	}
+}
+
+func flameWontCatch(c *Context) bool {
+	if c == nil || c.Env == nil || c.World == nil || c.Actor == nil {
+		return false
+	}
+	room := c.World.RoomOf(c.Actor)
+	return room != nil && c.Env.Extinguishes(room.Outdoor())
+}
+
 func who(c *Context, _ Parsed) {
 	c.Print("Players: %s", c.Actor.Name)
+}
+
+func timeCmd(c *Context, _ Parsed) {
+	if c.Env == nil || c.Env.TimeConfig.Level == 0 {
+		c.Print("Time has no meaning here.")
+		return
+	}
+	ti := c.Env.GetTime(c.Tick)
+	c.Print("It is %s.", ti.String())
+}
+
+func weatherCmd(c *Context, _ Parsed) {
+	if c.Env == nil || c.Env.WeatherConfig.Level == 0 {
+		c.Print("The weather is calm and unchanging.")
+		return
+	}
+	room := c.World.RoomOf(c.Actor)
+	isOutdoor := room != nil && room.Outdoor()
+	isWindowed := room != nil && room.Windowed()
+	desc, ok := c.Env.DescribeSky(isOutdoor, isWindowed)
+	if !ok {
+		c.Print("%s", desc)
+		return
+	}
+	st := c.Env.CurrentState()
+	c.Print("%s (%s)", desc, st.Label)
 }

@@ -42,6 +42,16 @@ func TestResolveOverAndUnder(t *testing.T) {
 	if !ok || got.Success || got.Target != 41 || got.Natural != 50 {
 		t.Fatalf("under %+v", got)
 	}
+	// Penalty 1 raises the over target from 8 to 9.
+	got, ok = s.ResolveHarder(rand.New(rand.NewSource(1)), w, actor, "escape", 0, false, 1)
+	if !ok || got.Success || got.Target != 9 {
+		t.Fatalf("over penalty %+v", got)
+	}
+	// Penalty 10 lowers the under ceiling from 41 to 31.
+	got, ok = s.ResolveHarder(rand.New(rand.NewSource(1)), w, actor, "fear", 0, false, 10)
+	if !ok || got.Success || got.Target != 31 || got.Natural != 50 {
+		t.Fatalf("under penalty %+v", got)
+	}
 	line := s.Decorate("The wolf bit you.", 4, false, "Vigor", &got)
 	if line == "The wolf bit you." {
 		t.Fatal("expected roll and number decoration")

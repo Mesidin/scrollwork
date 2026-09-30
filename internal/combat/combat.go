@@ -17,6 +17,8 @@ type Engine struct {
 	Emit    Emitter
 	Every   int
 	Rules   *rpg.Schema
+	// HitMod is a positive penalty added to outdoor hit checks. Nil adds nothing.
+	HitMod func(att *world.Entity) int
 }
 
 func (e *Engine) Start(a, b *world.Entity, now int64) {
@@ -45,6 +47,13 @@ func (e *Engine) ensure(ent *world.Entity) {
 	if len(ent.Combat.Attacks) == 0 {
 		ent.Combat.Attacks = []world.Attack{{Name: "hit", Damage: "1d4"}}
 	}
+}
+
+func (e *Engine) hitPenalty(att *world.Entity) int {
+	if e == nil || e.HitMod == nil || att == nil {
+		return 0
+	}
+	return e.HitMod(att)
 }
 
 func (e *Engine) Stop(ent *world.Entity) {
@@ -104,7 +113,7 @@ func (e *Engine) swing(w *world.World, att, def *world.Entity) {
 					opp, has = n, true
 				}
 			}
-			res, ok := rules.Resolve(e.RNG, w, att, "hit", opp, has)
+			res, ok := rules.ResolveHarder(e.RNG, w, att, "hit", opp, has, e.hitPenalty(att))
 			if ok && !res.Success {
 				e.report(w, att, def, atk, 0, &res, true)
 				return

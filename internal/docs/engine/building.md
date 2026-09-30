@@ -57,6 +57,8 @@ games/<id>/
 
 Doors: `door: true`, `locked: true`, `key: house.cellar-key`. Dark rooms: `flags: [dark]` — the player needs a light (`use lamp`).
 
+Weather flags, when the pack turns the clock or the sky on: `outdoor` (or `outdoors`) hears the open-air lines. `windowed` (or `sheltered`) hears the quieter lines and, at time scale 2, lets daylight into a dark room. `underground` ignores the sky. `lit` keeps an outdoor room bright at night. See `help systems`.
+
 ## Items
 
 Takeable things, clothes, keys, and usable gear.

@@ -8,6 +8,15 @@ import (
 	"sudengine/internal/world"
 )
 
+// envPenalty is how much harder outdoor notice and search are.
+// NoticeModifier is negative when the world hinders the roll.
+func envPenalty(c *Context, room *world.Entity) int {
+	if c == nil || c.Env == nil || room == nil {
+		return 0
+	}
+	return -c.Env.NoticeModifier(room.Outdoor())
+}
+
 func hiddenFrom(actor, e *world.Entity) bool {
 	if e == nil || !e.Hidden {
 		return false
@@ -34,7 +43,7 @@ func noticeOnEnter(c *Context, room *world.Entity) {
 		if !has {
 			dc = 0
 		}
-		res, ok := c.Pack.RPG.Resolve(c.RNG, c.World, c.Actor, "notice", dc, has)
+		res, ok := c.Pack.RPG.ResolveHarder(c.RNG, c.World, c.Actor, "notice", dc, has, envPenalty(c, room))
 		if ok && res.Success {
 			c.Actor.MarkFound(e.ID)
 		}
@@ -52,7 +61,8 @@ func revealHidden(c *Context, e *world.Entity) bool {
 		dc = e.Notice
 		has = e.Notice != 0
 	}
-	res, ok := c.Pack.RPG.Resolve(c.RNG, c.World, c.Actor, "notice", dc, has)
+	room := c.World.RoomOf(c.Actor)
+	res, ok := c.Pack.RPG.ResolveHarder(c.RNG, c.World, c.Actor, "notice", dc, has, envPenalty(c, room))
 	if !ok || !res.Success {
 		return false
 	}

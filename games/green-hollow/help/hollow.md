@@ -2,6 +2,8 @@
 
 Warden starts sturdier. Scholar mends (`mend` spends Focus) once Mind is high enough. Scout notices more and escapes more easily.
 
+The cottage window is the quiet view of the square. Light the lantern before you trust the thicket after dark.
+
 The silver ring in the thicket is hidden. A good Notice check may see it as you walk in. Otherwise `search`, or `look ring` once you know the word.
 
 Wolves stay in the thicket and the camp. Fleeing uses Footwork plus the cloak. The brigand is harder to get away from.

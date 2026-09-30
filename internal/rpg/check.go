@@ -159,6 +159,16 @@ func (s Schema) DamageBonus(e *world.Entity, skill string) int {
 // Resolve rolls a named check. hasOppose uses oppose even when it is 0.
 // The bool is false when the pack did not define the check.
 func (s Schema) Resolve(rng *rand.Rand, w *world.World, actor *world.Entity, name string, oppose int, hasOppose bool) (Result, bool) {
+	return s.resolve(rng, w, actor, name, oppose, hasOppose, 0)
+}
+
+// ResolveHarder is Resolve plus a situational penalty.
+// A positive penalty raises an over target and lowers an under ceiling.
+func (s Schema) ResolveHarder(rng *rand.Rand, w *world.World, actor *world.Entity, name string, oppose int, hasOppose bool, penalty int) (Result, bool) {
+	return s.resolve(rng, w, actor, name, oppose, hasOppose, penalty)
+}
+
+func (s Schema) resolve(rng *rand.Rand, w *world.World, actor *world.Entity, name string, oppose int, hasOppose bool, penalty int) (Result, bool) {
 	ch, ok := s.Check(name)
 	if !ok {
 		return Result{}, false
@@ -187,10 +197,13 @@ func (s Schema) Resolve(rng *rand.Rand, w *world.World, actor *world.Entity, nam
 	total := natural + mod
 	success := total >= target
 	if mode == "under" {
-		// A bonus widens the roll-under ceiling.
-		target += mod
+		// A bonus widens the roll-under ceiling. A penalty narrows it.
+		target += mod - penalty
 		total = natural
 		success = natural <= target
+	} else {
+		target += penalty
+		success = total >= target
 	}
 	return Result{
 		Rolled:  true,

@@ -3,27 +3,29 @@
   short: the square
   long: |
     Packed earth, a dry well, and the sergeant's bench under a plane tree.
-    The lane runs east toward the trees.
+    The lane runs east toward the trees. A cottage door faces south.
   x: 0
   y: 0
   z: 0
-  flags: [outdoor]
+  flags: [outdoor, lit]
   npcs: [hollow.bram]
   exits:
     east:
       to: hollow.lane
+    south:
+      to: hollow.cottage
 
 - id: hollow.lane
   name: East Lane
   short: the lane
   long: |
-    A cart track between low walls. Someone left a sword and a cloak
-    where the grass starts.
+    A cart track between low walls. Someone left a sword, a cloak,
+    and a lantern where the grass starts.
   x: 1
   y: 0
   z: 0
   flags: [outdoor]
-  items: [hollow.sword, hollow.cloak]
+  items: [hollow.sword, hollow.cloak, hollow.lantern]
   exits:
     west:
       to: hollow.square
@@ -61,3 +63,16 @@
   exits:
     south:
       to: hollow.thicket
+
+- id: hollow.cottage
+  name: Cottage
+  short: the cottage
+  long: |
+    A single room and a cold hearth. The window looks onto the square.
+  x: 0
+  y: -1
+  z: 0
+  flags: [windowed]
+  exits:
+    north:
+      to: hollow.square

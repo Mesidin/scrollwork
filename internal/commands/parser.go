@@ -48,9 +48,12 @@ var engineAliases = map[string]string{
 	"examine": "examine", "exa": "examine", "ex": "examine",
 	"read":      "examine",
 	"go":        "go",
-	"equipment": "equipment", "eq": "equipment",
-	"who":  "who",
-	"time": "time",
+	"who":     "who",
+	"time":    "time",
+	"clock":   "time",
+	"date":    "time",
+	"weather": "weather",
+	"sky":     "sky",
 }
 
 func Parse(line string, packCanonical func(string) string) Parsed {

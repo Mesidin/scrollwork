@@ -28,6 +28,38 @@ func TestMoveAndMatch(t *testing.T) {
 	}
 }
 
+func TestExtinguishToggleLights(t *testing.T) {
+	w := New()
+	room := &Entity{ID: "r", Kind: KindRoom, Name: "Yard", Flags: map[string]bool{"outdoor": true}}
+	player := &Entity{ID: "p", Kind: KindPlayer, Name: "you"}
+	lamp := &Entity{
+		ID: "lamp", Kind: KindItem, Name: "lamp",
+		Use:   &UseEffect{ToggleFlag: "light"},
+		Flags: map[string]bool{"light": true},
+	}
+	gem := &Entity{ID: "gem", Kind: KindItem, Name: "gem", Flags: map[string]bool{"light": true}}
+	w.Add(room)
+	w.Add(player)
+	w.Add(lamp)
+	w.Add(gem)
+	if err := w.Move(player.ID, room.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Move(lamp.ID, player.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Move(gem.ID, room.ID); err != nil {
+		t.Fatal(err)
+	}
+	gone := w.ExtinguishToggleLights(room)
+	if len(gone) != 1 || gone[0].ID != "lamp" {
+		t.Fatalf("expected the lamp only, got %+v", gone)
+	}
+	if lamp.HasFlag("light") || !gem.HasFlag("light") {
+		t.Fatal("toggle lights go out; a permanent light flag stays")
+	}
+}
+
 func TestSpawn(t *testing.T) {
 	w := New()
 	room := &Entity{ID: "r", Kind: KindRoom, Name: "R", Exits: map[string]Exit{}}

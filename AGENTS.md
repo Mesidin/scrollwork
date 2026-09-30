@@ -36,6 +36,7 @@ internal/combat/
 internal/script/        gopher-lua sandbox
 internal/theme/         ANSI-16 + Omarchy
 internal/docs/engine/   embedded manuals (help <topic>)
+agent/                  agent knowledge base (progress, roadmap, feature specs)
 games/<id>/             a game
 ```
 
@@ -88,10 +89,22 @@ Never put Old House fiction, Grit/Calm labels, or room text in Go. Those belong 
 ## Gaps (not implemented — don’t assume they exist)
 
 - CI on push (run `go test ./...` locally).
-- Crafting, weather, economy beyond a shop NPC.
+- Crafting, economy beyond a shop NPC (proposal in `agent/features/economy.md`).
 - Networked multiplayer.
 - Infocom-style parser.
 - YAML comment preservation on `save pack` (help/intro/Lua are left alone).
+
+## Agent Knowledge Base & Progress Tracking (`agent/`)
+
+To onboard agents quickly and maintain long-term momentum, consult and maintain the `agent/` directory:
+
+- **`agent/progress.md`**: Chronological milestone log, commit history, and verified engine state. Read this first when starting a session to know where the previous agent left off.
+- **`agent/roadmap.md`**: Master backlog of planned features, active items, and completed tasks.
+- **`agent/features/`**: In-depth feature proposals and architectural designs:
+  - `weather.md`: The implemented clock and weather scales, pack schema, and room flags.
+  - `economy.md`: Faucet/sink balance, dynamic merchant inventory/purses, item durability/repair sinks, and crafting pipelines.
+
+**Rule for agents**: When completing a task or wrapping up a session, update `agent/roadmap.md` and document what changed in `agent/progress.md`.
 
 ## In-game docs vs this file
 
