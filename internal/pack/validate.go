@@ -239,6 +239,26 @@ func (p *Pack) Validate() error {
 		if q.Rewards.Currency != "" && !hasResource(p, q.Rewards.Currency) {
 			errs = append(errs, fmt.Sprintf("quest %s: reward currency %q is not in resources", q.ID, q.Rewards.Currency))
 		}
+		if q.Script != "" {
+			name := strings.TrimPrefix(q.Script, "scripts/")
+			_, ok1 := p.Scripts[name]
+			_, ok2 := p.Scripts[name+".lua"]
+			if !ok1 && !ok2 {
+				errs = append(errs, fmt.Sprintf("quest %s: script %q not found", q.ID, q.Script))
+			}
+		}
+		for _, rel := range q.Rewards.Relocate {
+			if rel.Mob == "" {
+				errs = append(errs, fmt.Sprintf("quest %s: relocate entry missing mob", q.ID))
+			} else if _, ok := npcs[rel.Mob]; !ok {
+				errs = append(errs, fmt.Sprintf("quest %s: relocate mob %q is not an npc", q.ID, rel.Mob))
+			}
+			if rel.To == "" {
+				errs = append(errs, fmt.Sprintf("quest %s: relocate entry missing destination 'to'", q.ID))
+			} else if _, ok := rooms[rel.To]; !ok {
+				errs = append(errs, fmt.Sprintf("quest %s: relocate destination room %q is not a room", q.ID, rel.To))
+			}
+		}
 		questIDs[q.ID] = q
 	}
 	for _, q := range p.Quests {

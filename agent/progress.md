@@ -201,4 +201,25 @@ This document records the chronological development history, verified features, 
   * Added comprehensive OLC test suite in `internal/olc/olc_test.go` verifying `mset`, `iset`, `gset`, `recipe`, and full `save pack` reload round-tripping.
   * Updated builder documentation in `internal/docs/engine/building.md`.
 
+### Milestone 10: Quest-Driven Mob Relocation & Lua Teleportation (Oct 6, 2026)
+* **Declarative Quest Mob Relocation**:
+  * Added `Relocation` (`Mob`, `To`, `UpdateHome`, `Message`) to `quest.Rewards`.
+  * Relocate runs after `on_quest_complete`. The pack `message` is printed only when that move succeeds. A missing or ambiguous mobile or room is reported, and the quest stays completed.
+  * When several mobiles share a prototype, the one in the player's room is used. Any remaining tie moves nobody.
+  * `update_home` sets `HomeRoom` and adds the room to a restricted leash. A one-shot move leaves both alone. Death copies the leash onto the respawn task.
+  * Pack validation in `internal/pack/validate.go` validates that `relocate.mob` exists in NPCs and `relocate.to` exists in rooms.
+* **Lua Teleportation & Quest State Functions**:
+  * Added `teleport(who, where, [update_home])` (and alias `move`). It moves a mobile, item, or the player into a room, and refuses to reparent a room.
+  * Moving the player ends the fight and runs the same leave/enter path as walking. Other teleports stay quiet.
+  * `update_home` uses the same home and leash helper as quest relocate.
+  * `is_quest_completed(id, [who])`, `is_quest_active(id, [who])`, and `has_quest(id, [who])`. `has_quest` is true for an active or completed quest. `who` is an id, prototype, or keyword.
+* **Quest Completion Lua Hook**:
+  * `on_quest_complete(actor, self, quest_id)` runs after the quest is marked completed and before relocate, on the turn-in mobile or, when that mobile has no script, the giver's live instance. Optional `quest.script` runs as well.
+* **Verification & Documentation**:
+  * Unit test `TestQuestRelocation` in `internal/quest/quest_test.go`.
+  * Sandbox unit test `TestLuaTeleportAndQuestStatus` in `internal/script/script_test.go`.
+  * Integration test `TestQuestRelocationIntegration` in `internal/server/quest_test.go`.
+  * Updated `internal/docs/engine/systems.md` and `internal/docs/engine/building.md`.
+
+
 

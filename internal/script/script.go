@@ -1,6 +1,7 @@
 package script
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -176,6 +177,149 @@ func (h *Host) bind(L *lua.LState, actor, self *world.Entity) {
 		}
 		return 0
 	}))
+	L.SetGlobal("teleport", L.NewFunction(func(L *lua.LState) int {
+		return h.luaMove(L, actor, self)
+	}))
+	L.SetGlobal("move", L.GetGlobal("teleport"))
+	L.SetGlobal("is_quest_completed", L.NewFunction(func(L *lua.LState) int {
+		return h.luaQuestStatus(L, actor, "completed")
+	}))
+	L.SetGlobal("is_quest_active", L.NewFunction(func(L *lua.LState) int {
+		return h.luaQuestStatus(L, actor, "active")
+	}))
+	L.SetGlobal("has_quest", L.NewFunction(func(L *lua.LState) int {
+		return h.luaHasQuest(L, actor)
+	}))
+}
+
+func (h *Host) luaMove(L *lua.LState, actor, self *world.Entity) int {
+	fail := func() int {
+		L.Push(lua.LFalse)
+		return 1
+	}
+	top := L.GetTop()
+	if top < 1 || h.World == nil {
+		return fail()
+	}
+	prefer := h.preferRoom(actor, self)
+	var target *world.Entity
+	var dest *world.Entity
+	updateHome := false
+
+	if top == 1 {
+		target = self
+		dest = h.luaRoom(L.Get(1))
+	} else {
+		target = h.luaBeing(L.Get(1), prefer)
+		dest = h.luaRoom(L.Get(2))
+		if top >= 3 {
+			updateHome = L.ToBool(3)
+		}
+	}
+
+	if target == nil || dest == nil || target.Kind == world.KindRoom || dest.Kind != world.KindRoom {
+		return fail()
+	}
+
+	var err error
+	if h.Move != nil {
+		err = h.Move(target, dest)
+	} else {
+		err = h.World.Move(target.ID, dest.ID)
+	}
+	if err != nil {
+		return fail()
+	}
+	if updateHome {
+		world.RememberHome(target, dest)
+	}
+	L.Push(lua.LTrue)
+	return 1
+}
+
+func (h *Host) luaQuestStatus(L *lua.LState, actor *world.Entity, expectedStatus string) int {
+	target, qID := h.questWho(L, actor)
+	if target == nil || target.Quests == nil || qID == "" {
+		L.Push(lua.LFalse)
+		return 1
+	}
+	st := target.Quests[qID]
+	L.Push(lua.LBool(st != nil && st.Status == expectedStatus))
+	return 1
+}
+
+func (h *Host) luaHasQuest(L *lua.LState, actor *world.Entity) int {
+	target, qID := h.questWho(L, actor)
+	if target == nil || target.Quests == nil || qID == "" {
+		L.Push(lua.LFalse)
+		return 1
+	}
+	st := target.Quests[qID]
+	ok := st != nil && (st.Status == "active" || st.Status == "completed")
+	L.Push(lua.LBool(ok))
+	return 1
+}
+
+func (h *Host) questWho(L *lua.LState, actor *world.Entity) (*world.Entity, string) {
+	qID := L.ToString(1)
+	target := actor
+	if L.GetTop() >= 2 && L.Get(2) != lua.LNil {
+		target = h.luaBeing(L.Get(2), h.preferRoom(actor, nil))
+	}
+	return target, qID
+}
+
+func (h *Host) preferRoom(actor, self *world.Entity) world.ID {
+	if h.World == nil {
+		return ""
+	}
+	if room := h.World.RoomOf(actor); room != nil {
+		return room.ID
+	}
+	if room := h.World.RoomOf(self); room != nil {
+		return room.ID
+	}
+	return ""
+}
+
+func (h *Host) luaRoom(v lua.LValue) *world.Entity {
+	if h.World == nil {
+		return nil
+	}
+	if id, ok := tableID(v); ok {
+		e := h.World.Get(world.ID(id))
+		if e != nil && e.Kind == world.KindRoom {
+			return e
+		}
+		return nil
+	}
+	s, ok := v.(lua.LString)
+	if !ok {
+		return nil
+	}
+	room, err := h.World.ResolveRoom(string(s))
+	if err != nil {
+		return nil
+	}
+	return room
+}
+
+func (h *Host) luaBeing(v lua.LValue, prefer world.ID) *world.Entity {
+	if h.World == nil {
+		return nil
+	}
+	if id, ok := tableID(v); ok {
+		e := h.World.Get(world.ID(id))
+		if e != nil && e.Kind != world.KindRoom {
+			return e
+		}
+		return nil
+	}
+	s, ok := v.(lua.LString)
+	if !ok {
+		return nil
+	}
+	return h.lookup(string(s), prefer)
 }
 
 func (h *Host) setFlag(L *lua.LState, self *world.Entity) {
@@ -193,11 +337,11 @@ func (h *Host) setFlag(L *lua.LState, self *world.Entity) {
 		if L.Get(2).Type() == lua.LTBool {
 			on = L.ToBool(2)
 		} else {
-			target = h.findEntity(L.ToString(1))
+			target = h.lookup(L.ToString(1), h.preferRoom(self, nil))
 			name = L.ToString(2)
 		}
 	default:
-		target = h.findEntity(L.ToString(1))
+		target = h.lookup(L.ToString(1), h.preferRoom(self, nil))
 		name = L.ToString(2)
 		on = L.ToBool(3)
 	}
@@ -205,6 +349,21 @@ func (h *Host) setFlag(L *lua.LState, self *world.Entity) {
 		return
 	}
 	target.SetFlag(name, on)
+}
+
+func (h *Host) lookup(token string, prefer world.ID) *world.Entity {
+	if h.World == nil || strings.TrimSpace(token) == "" {
+		return nil
+	}
+	if e := h.World.Get(world.ID(token)); e != nil {
+		return e
+	}
+	if mob, err := h.World.ResolveMobile(token, prefer); err == nil {
+		return mob
+	} else if errors.Is(err, world.ErrAmbiguous) {
+		return nil
+	}
+	return h.findEntity(token)
 }
 
 func (h *Host) findEntity(token string) *world.Entity {

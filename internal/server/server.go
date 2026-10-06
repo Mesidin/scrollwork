@@ -155,7 +155,49 @@ func Launch(opt Options) (*Server, *Session, error) {
 	h.Damage = func(att, def *world.Entity, amount int) {
 		srv.Combat.Damage(w, att, def, amount, "strike")
 	}
+	h.Move = srv.moveEntity
 	return srv, sess, nil
+}
+
+func (s *Server) moveEntity(ent, dest *world.Entity) error {
+	if s == nil || s.World == nil || ent == nil || dest == nil {
+		return fmt.Errorf("invalid entity or destination")
+	}
+	if dest.Kind != world.KindRoom {
+		return fmt.Errorf("destination is not a room")
+	}
+	if ent.Kind == world.KindRoom {
+		return fmt.Errorf("cannot move a room")
+	}
+	old := s.World.RoomOf(ent)
+	if err := s.World.Move(ent.ID, dest.ID); err != nil {
+		return err
+	}
+	player := s.World.Player()
+	changed := old == nil || old.ID != dest.ID
+	if player != nil && changed {
+		movedPlayer := ent.ID == player.ID
+		movedTarget := player.Combat != nil && player.Combat.Target == ent.ID
+		if movedPlayer || movedTarget {
+			endFight(s.World, player)
+		}
+		if movedPlayer && s.Session != nil {
+			commands.Arrive(s.ctx(), old, dest)
+		}
+	}
+	return nil
+}
+
+func endFight(w *world.World, e *world.Entity) {
+	if w == nil || e == nil || e.Combat == nil || e.Combat.Target == "" {
+		return
+	}
+	if tgt := w.Get(e.Combat.Target); tgt != nil && tgt.Combat != nil && tgt.Combat.Target == e.ID {
+		tgt.Combat.Target = ""
+		tgt.Combat.NextSwing = 0
+	}
+	e.Combat.Target = ""
+	e.Combat.NextSwing = 0
 }
 
 func (s *Server) Run(ctx context.Context) {
@@ -366,6 +408,9 @@ func (s *Server) processRespawns() {
 			mob, err := s.World.Spawn(task.ProtoID, task.RoomID)
 			if err == nil && mob != nil {
 				mob.HomeRoom = task.RoomID
+				if mob.AI != nil && len(task.Rooms) > 0 {
+					mob.AI.Rooms = append([]world.ID{}, task.Rooms...)
+				}
 				player := s.World.Player()
 				if player != nil && s.World.RoomOf(player) == s.World.Get(task.RoomID) {
 					s.Session.Send(protocol.TextEvent{
@@ -738,11 +783,15 @@ func (s *Server) reapDead() {
 				if proto == "" {
 					proto = e.ID
 				}
-				s.World.Respawns = append(s.World.Respawns, world.RespawnTask{
+				task := world.RespawnTask{
 					ProtoID: proto,
 					RoomID:  home,
 					DueTick: s.World.Tick + int64(e.RespawnEvery),
-				})
+				}
+				if e.AI != nil && len(e.AI.Rooms) > 0 {
+					task.Rooms = append([]world.ID{}, e.AI.Rooms...)
+				}
+				s.World.Respawns = append(s.World.Respawns, task)
 			}
 		}
 		s.World.Destroy(id)

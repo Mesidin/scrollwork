@@ -262,6 +262,7 @@ type RespawnTask struct {
 	ProtoID ID    `json:"proto_id" yaml:"proto_id"`
 	RoomID  ID    `json:"room_id" yaml:"room_id"`
 	DueTick int64 `json:"due_tick" yaml:"due_tick"`
+	Rooms   []ID  `json:"rooms,omitempty" yaml:"rooms,omitempty"`
 }
 
 type QuestState struct {

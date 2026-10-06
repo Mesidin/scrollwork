@@ -61,6 +61,8 @@ Status Legend:
   * [x] Prerequisite quest chains (`requires_quest`).
   * [x] Player commands (`quests` / `tasks` / `journal`, `quest <id>`, `quest accept`, `quest complete`).
   * [x] Dialogue integration: NPC `talk` lists offered quests and ready turn-ins; `ask` triggers talk objectives.
+  * [x] Quest-driven NPC relocation: declarative `relocate:` rewards (`mob`, `to`, `update_home`, `message`) run after the turn-in script, and only a move that happened is narrated.
+  * [x] Lua quest hooks & teleportation: `on_quest_complete` sees a completed quest before relocate. `teleport` / `move`, `has_quest`, `is_quest_completed`, and `is_quest_active`.
   * [x] Demonstrated with 3-quest progression line in `games/green-hollow`.
 
 ---

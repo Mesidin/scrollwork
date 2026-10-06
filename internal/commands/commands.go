@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -1466,8 +1467,18 @@ func move(c *Context, dir string) {
 	}
 	old := room
 	_ = c.World.Move(c.Actor.ID, dest.ID)
-	_, _ = c.Scripts.Call("on_leave", c.Actor, old)
-	_, _ = c.Scripts.Call("on_enter", c.Actor, dest)
+	Arrive(c, old, dest)
+}
+
+// Arrive runs the leave and enter hooks after the actor is already in dest.
+func Arrive(c *Context, old, dest *world.Entity) {
+	if c == nil || c.Actor == nil || dest == nil {
+		return
+	}
+	if c.Scripts != nil && old != nil && old.ID != dest.ID {
+		_, _ = c.Scripts.Call("on_leave", c.Actor, old)
+		_, _ = c.Scripts.Call("on_enter", c.Actor, dest)
+	}
 	EnterRoom(c, true)
 }
 
@@ -2374,8 +2385,9 @@ func questCmd(c *Context, p Parsed) {
 		if turnInID == "" {
 			turnInID = q.Giver
 		}
+		var turnInNPC *world.Entity
 		if turnInID != "" {
-			turnInNPC := npcInRoom(c, turnInID)
+			turnInNPC = npcInRoom(c, turnInID)
 			if turnInNPC == nil {
 				c.Print("The turn-in contact is not here.")
 				return
@@ -2392,6 +2404,22 @@ func questCmd(c *Context, p Parsed) {
 		c.Print("Quest Completed: %s!", q.Title)
 		if q.Rewards.Message != "" {
 			c.Print("%s", q.Rewards.Message)
+		}
+		runQuestScripts(c, q, turnInNPC)
+		prefer := world.ID("")
+		if room := c.World.RoomOf(c.Actor); room != nil {
+			prefer = room.ID
+		}
+		for _, mv := range quest.ApplyRelocations(c.World, prefer, q.Rewards.Relocate) {
+			if mv.OK {
+				if mv.Message != "" {
+					c.Print("%s", mv.Message)
+				}
+				continue
+			}
+			if mv.Reason != "" {
+				c.Print("%s", mv.Reason)
+			}
 		}
 		var rewardsList []string
 		if q.Rewards.XP > 0 {
@@ -2451,6 +2479,47 @@ func questCmd(c *Context, p Parsed) {
 			c.Print("Unknown quest command: '%s'. Try 'quest accept <id>', 'quest complete <id>', or 'quests'.", sub)
 		}
 	}
+}
+
+func runQuestScripts(c *Context, q *quest.Quest, turnIn *world.Entity) {
+	if c == nil || c.Scripts == nil || q == nil {
+		return
+	}
+	self := turnIn
+	if self == nil || self.Scripts == "" {
+		self = giverWithScript(c, q.Giver)
+	}
+	if self != nil && self.Scripts != "" {
+		if _, err := c.Scripts.Call("on_quest_complete", c.Actor, self, q.ID); err != nil {
+			c.Print("[Script error: %v]", err)
+		}
+	}
+	if q.Script != "" {
+		if _, err := c.Scripts.CallFile(q.Script, "on_quest_complete", c.Actor, turnIn, q.ID); err != nil {
+			c.Print("[Script error: %v]", err)
+		}
+	}
+}
+
+func giverWithScript(c *Context, giverID string) *world.Entity {
+	if c == nil || c.World == nil || giverID == "" {
+		return nil
+	}
+	prefer := world.ID("")
+	if room := c.World.RoomOf(c.Actor); room != nil {
+		prefer = room.ID
+	}
+	giver, err := c.World.ResolveMobile(giverID, prefer)
+	if err != nil {
+		if errors.Is(err, world.ErrAmbiguous) {
+			c.Print("More than one %s matches; the quest script did not run.", giverID)
+		}
+		return nil
+	}
+	if giver == nil || giver.Scripts == "" {
+		return nil
+	}
+	return giver
 }
 
 func pickQuest(c *Context, query string) *quest.Quest {

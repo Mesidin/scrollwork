@@ -1,6 +1,7 @@
 package quest
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -34,13 +35,21 @@ type Objective struct {
 	Consume bool          `json:"consume,omitempty" yaml:"consume,omitempty"`
 }
 
+type Relocation struct {
+	Mob        string `json:"mob" yaml:"mob"`
+	To         string `json:"to" yaml:"to"`
+	UpdateHome bool   `json:"update_home,omitempty" yaml:"update_home,omitempty"`
+	Message    string `json:"message,omitempty" yaml:"message,omitempty"`
+}
+
 type Rewards struct {
-	XP       int      `json:"xp,omitempty" yaml:"xp,omitempty"`
-	Currency string   `json:"currency,omitempty" yaml:"currency,omitempty"`
-	Amount   int      `json:"amount,omitempty" yaml:"amount,omitempty"`
-	Items    []string `json:"items,omitempty" yaml:"items,omitempty"`
-	Recipes  []string `json:"recipes,omitempty" yaml:"recipes,omitempty"`
-	Message  string   `json:"message,omitempty" yaml:"message,omitempty"`
+	XP       int          `json:"xp,omitempty" yaml:"xp,omitempty"`
+	Currency string       `json:"currency,omitempty" yaml:"currency,omitempty"`
+	Amount   int          `json:"amount,omitempty" yaml:"amount,omitempty"`
+	Items    []string     `json:"items,omitempty" yaml:"items,omitempty"`
+	Recipes  []string     `json:"recipes,omitempty" yaml:"recipes,omitempty"`
+	Relocate []Relocation `json:"relocate,omitempty" yaml:"relocate,omitempty"`
+	Message  string       `json:"message,omitempty" yaml:"message,omitempty"`
 }
 
 type Quest struct {
@@ -51,6 +60,7 @@ type Quest struct {
 	TurnIn        string      `json:"turnin,omitempty" yaml:"turnin,omitempty"`
 	AutoStart     bool        `json:"auto_start,omitempty" yaml:"auto_start,omitempty"`
 	RequiresQuest []string    `json:"requires_quest,omitempty" yaml:"requires_quest,omitempty"`
+	Script        string      `json:"script,omitempty" yaml:"script,omitempty"`
 	Objectives    []Objective `json:"objectives" yaml:"objectives"`
 	Rewards       Rewards     `json:"rewards,omitempty" yaml:"rewards,omitempty"`
 }
@@ -273,6 +283,71 @@ func Complete(actor *world.Entity, w *world.World, q Quest, now int64) error {
 	st.CompletedAt = now
 
 	return nil
+}
+
+// MoveResult is one relocate entry after the attempt. Message is the pack
+// line and is only for a move that happened. Reason is the player-facing
+// failure.
+type MoveResult struct {
+	Mob     string
+	To      string
+	Message string
+	OK      bool
+	Reason  string
+}
+
+// ApplyRelocations moves each reward entry. prefer is the actor's room, used
+// when several mobiles share a prototype. Home and leash change only after a
+// successful move whose entry sets UpdateHome.
+func ApplyRelocations(w *world.World, prefer world.ID, rels []Relocation) []MoveResult {
+	if len(rels) == 0 {
+		return nil
+	}
+	out := make([]MoveResult, 0, len(rels))
+	for _, rel := range rels {
+		res := MoveResult{Mob: rel.Mob, To: rel.To, Message: rel.Message}
+		if w == nil {
+			res.Reason = fmt.Sprintf("No mobile matches %s; nobody moved.", rel.Mob)
+			out = append(out, res)
+			continue
+		}
+		mob, err := w.ResolveMobile(rel.Mob, prefer)
+		if err != nil {
+			res.Reason = relocateFailure(rel.Mob, err, true)
+			out = append(out, res)
+			continue
+		}
+		dest, err := w.ResolveRoom(rel.To)
+		if err != nil {
+			res.Reason = relocateFailure(rel.To, err, false)
+			out = append(out, res)
+			continue
+		}
+		if err := w.Move(mob.ID, dest.ID); err != nil {
+			res.Reason = fmt.Sprintf("%s could not enter %s.", rel.Mob, rel.To)
+			out = append(out, res)
+			continue
+		}
+		if rel.UpdateHome {
+			world.RememberHome(mob, dest)
+		}
+		res.OK = true
+		out = append(out, res)
+	}
+	return out
+}
+
+func relocateFailure(token string, err error, mobile bool) string {
+	if errors.Is(err, world.ErrAmbiguous) {
+		if mobile {
+			return fmt.Sprintf("More than one %s matches; nobody moved.", token)
+		}
+		return fmt.Sprintf("More than one room matches %s; nobody moved.", token)
+	}
+	if mobile {
+		return fmt.Sprintf("No mobile matches %s; nobody moved.", token)
+	}
+	return fmt.Sprintf("No room matches %s; nobody moved.", token)
 }
 
 func UpdateKill(actor *world.Entity, target *world.Entity, quests []Quest, w *world.World) []Notice {

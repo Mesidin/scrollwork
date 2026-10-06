@@ -9,6 +9,7 @@ import (
 
 	"sudengine/internal/pack"
 	"sudengine/internal/protocol"
+	"sudengine/internal/quest"
 	"sudengine/internal/world"
 )
 
@@ -158,5 +159,95 @@ func TestGreenHollowQuests(t *testing.T) {
 		if it != nil && strings.EqualFold(string(it.PrototypeID), "hollow.ring") {
 			t.Fatalf("ring should have been consumed on completion")
 		}
+	}
+}
+
+func TestQuestRelocationIntegration(t *testing.T) {
+	packDir := filepath.Join("..", "..", "games", "green-hollow")
+	srv, sess, err := Launch(Options{
+		PackDir:    packDir,
+		Mode:       protocol.ModePlay,
+		PlayerName: "Hero",
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.Run(ctx)
+	defer func() { sess.In <- "quit" }()
+
+	time.Sleep(30 * time.Millisecond)
+	drainLines(sess)
+
+	var bram *world.Entity
+	for _, e := range srv.World.Entities {
+		if e.Kind == world.KindMobile && e.PrototypeID == "hollow.bram" {
+			bram = e
+			break
+		}
+	}
+	if bram == nil {
+		t.Fatalf("bram not found")
+	}
+
+	srv.Pack.Scripts["bram_reloc.lua"] = `
+function on_quest_complete(actor, self, quest_id)
+    echo_room("Bram raises his hand in a sharp salute.")
+    if is_quest_completed(quest_id) then
+        echo("The quest is already written down.")
+    end
+    return true
+end
+`
+	srv.Scripts.Reload(srv.Pack.Scripts)
+	bram.Scripts = "bram_reloc.lua"
+
+	relocQuest := quest.Quest{
+		ID:     "reloc_test",
+		Title:  "Move Bram",
+		TurnIn: "hollow.bram",
+		Rewards: quest.Rewards{
+			Relocate: []quest.Relocation{
+				{
+					Mob:        "hollow.bram",
+					To:         "hollow.cottage",
+					UpdateHome: true,
+					Message:    "Bram marches south into the cottage.",
+				},
+			},
+		},
+	}
+	srv.Pack.Quests = append(srv.Pack.Quests, relocQuest)
+
+	sess.In <- "quest accept reloc_test"
+	time.Sleep(30 * time.Millisecond)
+	drainLines(sess)
+
+	sess.In <- "quest complete reloc_test"
+	time.Sleep(40 * time.Millisecond)
+	lines := drainLines(sess)
+	all := strings.Join(lines, "\n")
+
+	if !strings.Contains(all, "Quest Completed: Move Bram!") {
+		t.Fatalf("expected quest completion, got:\n%s", all)
+	}
+	if !strings.Contains(all, "Bram marches south into the cottage.") {
+		t.Fatalf("expected relocation message, got:\n%s", all)
+	}
+	salute := strings.Index(all, "Bram raises his hand in a sharp salute.")
+	march := strings.Index(all, "Bram marches south into the cottage.")
+	if salute < 0 || march < 0 || salute > march {
+		t.Fatalf("expected the room echo before Bram moved, got:\n%s", all)
+	}
+	if !strings.Contains(all, "The quest is already written down.") {
+		t.Fatalf("expected the hook to see a completed quest, got:\n%s", all)
+	}
+
+	if bram.Parent != "hollow.cottage" {
+		t.Fatalf("expected Bram parent hollow.cottage, got %s", bram.Parent)
+	}
+	if bram.HomeRoom != "hollow.cottage" {
+		t.Fatalf("expected Bram home room hollow.cottage, got %s", bram.HomeRoom)
 	}
 }

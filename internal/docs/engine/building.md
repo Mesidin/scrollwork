@@ -132,7 +132,7 @@ The engine has no baked-in D&D. This pack defines named resources and traits. `l
 
 Most content needs zero Lua. For a whispering portrait or a boss phase, add `scripts/foo.lua` and set `scripts: foo.lua` on the entity.
 
-Sandbox: no `io` or `os`. Hooks: `on_look`, `on_use`, `on_ask`, `on_enter`, `on_leave`, `on_death`, `on_tick`. Return `true` from `on_use` / `on_ask` to skip the YAML default. Then `reload` in build mode.
+Sandbox: no `io` or `os`. Hooks: `on_look`, `on_use`, `on_ask`, `on_enter`, `on_leave`, `on_death`, `on_tick`, `on_quest_complete`. Builtins: `echo`, `echo_room`, `teleport` (or `move`), `damage`, `set_flag`, `learn_recipe`, `has_quest`, `is_quest_completed`, `is_quest_active`. `on_quest_complete` runs after the quest is marked completed and before `relocate`, so `echo_room` still reaches the room the player is standing in. `has_quest(id, [who])` is true when that quest is active or completed. `is_quest_completed` and `is_quest_active` take the same optional who (an id, prototype, or keyword). `teleport(who, where, [update_home])` moves a mobile, item, or the player into a room. `update_home` sets the respawn room and adds it to a restricted leash; leaving it off is a one-shot move. Return `true` from `on_use` / `on_ask` to skip the YAML default. Then `reload` in build mode.
 
 ## Settings and rules
 

@@ -161,3 +161,145 @@ func TestCollectObjectiveConsumes(t *testing.T) {
 		t.Fatalf("expected 1 remaining ring, got %d", len(kids))
 	}
 }
+
+func TestQuestRelocation(t *testing.T) {
+	w := world.New()
+	roomA := &world.Entity{ID: "roomA", Kind: world.KindRoom}
+	roomB := &world.Entity{ID: "roomB", Kind: world.KindRoom}
+	player := &world.Entity{ID: "player", Kind: world.KindPlayer}
+	guard := &world.Entity{
+		ID:       "mob.guard",
+		Kind:     world.KindMobile,
+		Keywords: []string{"guard"},
+		HomeRoom: roomA.ID,
+		AI: &world.AI{
+			Profile: "wander",
+			Rooms:   []world.ID{roomA.ID},
+		},
+	}
+	w.Add(roomA)
+	w.Add(roomB)
+	w.Add(player)
+	w.Add(guard)
+	_ = w.Move(player.ID, roomA.ID)
+	_ = w.Move(guard.ID, roomA.ID)
+
+	q := quest.Quest{
+		ID:    "escort_guard",
+		Title: "Escort the Guard",
+		Rewards: quest.Rewards{
+			Relocate: []quest.Relocation{
+				{
+					Mob:        "mob.guard",
+					To:         "roomB",
+					UpdateHome: true,
+					Message:    "The guard reports to the new post.",
+				},
+			},
+		},
+	}
+
+	quest.Start(player, q)
+	if err := quest.Complete(player, w, q, 1); err != nil {
+		t.Fatalf("failed to complete quest: %v", err)
+	}
+	if guard.Parent != roomA.ID {
+		t.Fatalf("complete should leave the guard in %s until relocate runs, got %s", roomA.ID, guard.Parent)
+	}
+	moved := quest.ApplyRelocations(w, roomA.ID, q.Rewards.Relocate)
+	if len(moved) != 1 || !moved[0].OK {
+		t.Fatalf("relocate: %+v", moved)
+	}
+
+	if guard.Parent != roomB.ID {
+		t.Fatalf("expected guard parent %s, got %s", roomB.ID, guard.Parent)
+	}
+	if guard.HomeRoom != roomB.ID {
+		t.Fatalf("expected guard home room %s, got %s", roomB.ID, guard.HomeRoom)
+	}
+	if !guard.AI.Allows(roomB.ID) {
+		t.Fatalf("expected guard AI to allow roomB, rooms: %+v", guard.AI.Rooms)
+	}
+}
+
+func TestRelocatePrefersTheMobileInTheRoom(t *testing.T) {
+	w := world.New()
+	roomA := &world.Entity{ID: "roomA", Kind: world.KindRoom}
+	roomB := &world.Entity{ID: "roomB", Kind: world.KindRoom}
+	roomC := &world.Entity{ID: "roomC", Kind: world.KindRoom}
+	here := &world.Entity{ID: "mob.guard#1", PrototypeID: "mob.guard", Kind: world.KindMobile, Name: "here"}
+	away := &world.Entity{ID: "mob.guard#2", PrototypeID: "mob.guard", Kind: world.KindMobile, Name: "away"}
+	for _, e := range []*world.Entity{roomA, roomB, roomC, here, away} {
+		w.Add(e)
+	}
+	_ = w.Move(here.ID, roomA.ID)
+	_ = w.Move(away.ID, roomC.ID)
+
+	rel := []quest.Relocation{{Mob: "mob.guard", To: "roomB", UpdateHome: true, Message: "The guard reports to the new post."}}
+	moved := quest.ApplyRelocations(w, roomA.ID, rel)
+	if len(moved) != 1 || !moved[0].OK {
+		t.Fatalf("relocate: %+v", moved)
+	}
+	if here.Parent != roomB.ID {
+		t.Fatalf("expected the in-room guard to move, parent %s", here.Parent)
+	}
+	if away.Parent != roomC.ID {
+		t.Fatalf("expected the other guard to stay, parent %s", away.Parent)
+	}
+}
+
+func TestRelocateAmbiguousOrMissingDoesNotNarrateSuccess(t *testing.T) {
+	w := world.New()
+	roomA := &world.Entity{ID: "roomA", Kind: world.KindRoom}
+	roomB := &world.Entity{ID: "roomB", Kind: world.KindRoom}
+	roomC := &world.Entity{ID: "roomC", Kind: world.KindRoom}
+	a := &world.Entity{ID: "mob.guard#1", PrototypeID: "mob.guard", Kind: world.KindMobile}
+	b := &world.Entity{ID: "mob.guard#2", PrototypeID: "mob.guard", Kind: world.KindMobile}
+	for _, e := range []*world.Entity{roomA, roomB, roomC, a, b} {
+		w.Add(e)
+	}
+	_ = w.Move(a.ID, roomA.ID)
+	_ = w.Move(b.ID, roomB.ID)
+
+	rel := []quest.Relocation{{Mob: "mob.guard", To: "roomC", Message: "The guard reports to the new post."}}
+	moved := quest.ApplyRelocations(w, "", rel)
+	if len(moved) != 1 || moved[0].OK || moved[0].Reason == "" {
+		t.Fatalf("ambiguous relocate should fail visibly: %+v", moved)
+	}
+	if a.Parent != roomA.ID || b.Parent != roomB.ID {
+		t.Fatal("ambiguous relocate moved a guard")
+	}
+
+	missing := quest.ApplyRelocations(w, roomA.ID, []quest.Relocation{{Mob: "mob.missing", To: "roomC", Message: "Gone."}})
+	if len(missing) != 1 || missing[0].OK || missing[0].Reason == "" {
+		t.Fatalf("missing mobile should fail visibly: %+v", missing)
+	}
+}
+
+func TestRelocateWithoutUpdateHomeLeavesLeash(t *testing.T) {
+	w := world.New()
+	roomA := &world.Entity{ID: "roomA", Kind: world.KindRoom}
+	roomB := &world.Entity{ID: "roomB", Kind: world.KindRoom}
+	guard := &world.Entity{
+		ID: "mob.guard", Kind: world.KindMobile, HomeRoom: roomA.ID,
+		AI: &world.AI{Profile: "wander", Rooms: []world.ID{roomA.ID}},
+	}
+	w.Add(roomA)
+	w.Add(roomB)
+	w.Add(guard)
+	_ = w.Move(guard.ID, roomA.ID)
+
+	moved := quest.ApplyRelocations(w, roomA.ID, []quest.Relocation{{Mob: "mob.guard", To: "roomB"}})
+	if len(moved) != 1 || !moved[0].OK {
+		t.Fatalf("relocate: %+v", moved)
+	}
+	if guard.Parent != roomB.ID {
+		t.Fatalf("expected parent %s, got %s", roomB.ID, guard.Parent)
+	}
+	if guard.HomeRoom != roomA.ID {
+		t.Fatalf("one-shot move changed home to %s", guard.HomeRoom)
+	}
+	if guard.AI.Allows(roomB.ID) {
+		t.Fatalf("one-shot move widened the leash: %+v", guard.AI.Rooms)
+	}
+}

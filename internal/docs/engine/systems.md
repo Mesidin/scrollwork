@@ -202,7 +202,14 @@ Each quest includes:
   - `amount`: currency amount awarded
   - `items`: list of item prototype IDs granted to player inventory
   - `recipes`: list of recipe IDs taught upon completion
+  - `relocate`: list of NPC moves upon completion (`mob`, `to`, `update_home`, `message`)
   - `message`: dialogue response or closing narrative text
+
+Quests can also specify an optional `script: scripts/foo.lua`. Turning a quest in marks it completed, then runs `on_quest_complete(actor, self, quest_id)` on the turn-in mobile's script. If that mobile has no script, the giver's live instance is used (a prototype id such as `hollow.bram` matches the spawned body). The quest script runs after that. `relocate` happens after the hook, and each `message` is shown only when that move succeeds. A missing or ambiguous mobile or room is reported, and the quest stays completed.
+
+`teleport(who, where, [update_home])` (alias `move`) moves a mobile, item, or the player into a room. It will not move a room, or move something into a non-room. When the player is moved, the fight ends and the normal leave/enter path runs, including visit objectives. Other teleports stay quiet unless the script echoes. `update_home` sets `HomeRoom` and adds the room to a restricted `ai.rooms` leash; that leash is copied onto the respawn. Omit `update_home` for a one-shot move.
+
+`is_quest_completed(quest_id, [who])` and `is_quest_active(quest_id, [who])` read one status. `who` defaults to the actor and may be an id, a prototype, or a keyword. `has_quest(quest_id, [who])` is true when the quest is active or already completed. The completion hook sees status `completed`.
 
 ### Commands
 - `quests` (or `tasks`, `journal`): list active quests with objective progress, and completed quests.
