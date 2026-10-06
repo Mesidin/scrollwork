@@ -8,6 +8,7 @@ labels:
   melee: Melee
   footwork: Footwork
   notice: Notice
+  crafting: Crafting
   role: Role
   class: Role
 commands: {}

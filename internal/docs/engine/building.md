@@ -156,24 +156,92 @@ Change those in a text editor, then start the session again.
 ```
 dig north Kitchen     create + link + walk
 buildwalk             walking into a void digs
-name <title>
+name <title>          set current room title
 desc                  then type lines, end with .
-desc <one line>
-rflags dark
+desc <one line>       set room description directly
+rflags dark           toggle room flags (dark, outdoor, lit, underground, windowed)
 extra add portrait | The eyes follow you.
-ai rat aggressive
-iset lamp use light
-iset knife damage 1d6+1
 proto item lamp a brass lamp
 proto npc rat a rat
-spawn rat
-goto house.foyer
-rooms
-save pack             write world YAML (not help, intro, or Lua)
-reload                reread Lua
+spawn rat             instantiate mobile in current room
+goto house.foyer      teleport to room
+rooms                 list all world rooms
+save pack             write world YAML and recipes
+reload                reread Lua scripts
 ```
 
-`save pack` rewrites world YAML (comments in those files may be lost). It does not rewrite `help/`, `intro.txt`, or Lua.
+## Mobile builder (mset)
+
+Configure mobiles and prototypes directly in-engine:
+
+```
+mset <mob> show
+mset <mob> ai <profile> [wander on|off]   set AI profile (sentinel, wander, aggressive, coward)
+mset <mob> trainer <on|off>           enable skill trainer service
+mset <mob> repairer <on|off>          enable equipment repair service
+mset <mob> banker <on|off>            enable vault deposit/withdraw service
+mset <mob> xp <amount>                experience awarded on defeat
+mset <mob> respawn <ticks>            automatic respawn interval (0 = off)
+mset <mob> shop currency <id>         merchant coin currency ID
+mset <mob> shop purse <amount>        merchant active till
+mset <mob> shop maxpurse <amount>     merchant maximum purse capacity
+mset <mob> shop dynamic <on|off>      finite till that refills as players buy; prices stay fixed
+mset <mob> shop clear                 remove merchant shopkeeper role
+mset <mob> topic <key> <text>         dialogue topic response
+mset <mob> teach <topic> <recipe>     teach crafting recipe on dialogue topic
+mset <mob> loot add <item> [chance] [count] [skin]   add loot drop or skinning yield
+mset <mob> loot list                  display mobile loot table
+mset <mob> loot clear                 wipe all loot drops
+```
+
+## Item builder (iset)
+
+Inspect and configure item properties, combat stats, durability, and survival tools:
+
+```
+iset <item> show
+iset <item> use <flag>                toggle use flag effect
+iset <item> damage <dice>             weapon damage dice (e.g. 1d6+1, slot wield)
+iset <item> armor <soak>              armor soak value (slot body)
+iset <item> slot <body|head|wield...> equipment slot
+iset <item> value <coins>             base economic value in coins
+iset <item> durability <n>            maximum and current durability
+iset <item> repairable <on|off>       allow repair at blacksmith/artisan
+iset <item> banker <on|off>           mark container as vault bank
+iset <item> kit <uses> [amount] [skill] [dc]   field repair kit configuration
+iset <item> kit clear                 clear repair kit properties
+iset <item> salvage add <item> [count]          add salvage yield material
+iset <item> salvage list              show salvage yields
+iset <item> salvage clear             clear salvage yields
+```
+
+## Gathering builder (gset)
+
+Configure resource nodes on rooms, scenery extras, or standalone items:
+
+```
+gset show                             display gathering configuration for room
+gset clear                            remove gathering node from room
+gset room item <id> [max] [regen] [skill] [dc] [bonus_dc]
+                                      attach resource node to current room
+gset node <extra|item> [max] [regen] [skill] [dc] [bonus_dc]
+                                      attach resource node to scenery extra or item
+```
+
+## Recipe builder (recipe)
+
+Manage the pack's `recipes.yaml` crafting registry:
+
+```
+recipe list / rclist                  show all registered crafting recipes
+recipe show <id>                      display recipe requirements, station, DC, and discovery
+recipe add <id> <item> [name <name>] [station <s>] [skill <s>] [dc <n>] [min <n>] [disc on|off]
+                                      create a recipe, or change only the fields you name
+recipe req <id> <item> [count]        add required ingredient to recipe
+recipe del <id>                       delete recipe from pack
+```
+
+`disc` is on or off. On means the recipe starts known. Off means a player learns it from a quest, a topic, or `use`. Named discovery methods are not stored.
 
 ## Check your work
 

@@ -233,18 +233,44 @@ func ApplyDefaults(e *world.Entity, s Schema) {
 		}
 	}
 	for _, r := range s.Resources {
-		if _, ok := e.Resources[r.Key]; !ok {
-			e.Resources[r.Key] = world.Resource{Current: r.Max, Max: r.Max}
+		cur, ok := e.Resources[r.Key]
+		if !ok {
+			cur = world.Resource{Current: r.Max, Max: r.Max}
 		} else {
-			cur := e.Resources[r.Key]
 			if cur.Max == 0 {
 				cur.Max = r.Max
 			}
-			if cur.Current == 0 && cur.Max > 0 {
+			if !r.Pile && cur.Current == 0 && cur.Max > 0 {
 				cur.Current = cur.Max
 			}
-			e.Resources[r.Key] = cur
 		}
+		cur.Pile = r.Pile
+		e.Resources[r.Key] = cur
+	}
+}
+
+// StampPiles copies pile flags from the schema onto live resources.
+// Saves written before piles were stored on the resource still earn past the starting amount.
+func (s Schema) StampPiles(w *world.World) {
+	if w == nil {
+		return
+	}
+	for _, e := range w.Entities {
+		s.stampPiles(e)
+	}
+}
+
+func (s Schema) stampPiles(e *world.Entity) {
+	if e == nil || e.Resources == nil {
+		return
+	}
+	for _, def := range s.Resources {
+		cur, ok := e.Resources[def.Key]
+		if !ok || cur.Pile == def.Pile {
+			continue
+		}
+		cur.Pile = def.Pile
+		e.Resources[def.Key] = cur
 	}
 }
 
@@ -263,8 +289,10 @@ func ApplyBundle(e *world.Entity, b Bundle) {
 	}
 	for k, v := range b.Resources {
 		r := e.Resources[k]
+		pile := r.Pile
 		r.Current = v
 		r.Max = v
+		r.Pile = pile
 		e.Resources[k] = r
 	}
 	for k, v := range b.Skills {

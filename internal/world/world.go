@@ -2,8 +2,11 @@
 package world
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 type ID string
@@ -19,8 +22,9 @@ const (
 )
 
 type Resource struct {
-	Current int `json:"current" yaml:"current"`
-	Max     int `json:"max" yaml:"max"`
+	Current int  `json:"current" yaml:"current"`
+	Max     int  `json:"max" yaml:"max"`
+	Pile    bool `json:"pile,omitempty" yaml:"pile,omitempty"`
 }
 
 type Exit struct {
@@ -65,9 +69,22 @@ type Combat struct {
 }
 
 type UseEffect struct {
-	ToggleFlag string `json:"toggle_flag,omitempty" yaml:"toggle_flag,omitempty"`
-	Message    string `json:"message,omitempty" yaml:"message,omitempty"`
-	MessageOff string `json:"message_off,omitempty" yaml:"message_off,omitempty"`
+	ToggleFlag  string `json:"toggle_flag,omitempty" yaml:"toggle_flag,omitempty"`
+	Message     string `json:"message,omitempty" yaml:"message,omitempty"`
+	MessageOff  string `json:"message_off,omitempty" yaml:"message_off,omitempty"`
+	LearnRecipe string `json:"learn_recipe,omitempty" yaml:"learn_recipe,omitempty"`
+}
+
+type GatherNode struct {
+	Resource    string `json:"resource" yaml:"resource"`
+	Name        string `json:"name,omitempty" yaml:"name,omitempty"`
+	Skill       string `json:"skill,omitempty" yaml:"skill,omitempty"`
+	Difficulty  int    `json:"difficulty,omitempty" yaml:"difficulty,omitempty"`
+	BonusDC     int    `json:"bonus_dc,omitempty" yaml:"bonus_dc,omitempty"`
+	Remaining   int    `json:"remaining" yaml:"remaining"`
+	Max         int    `json:"max" yaml:"max"`
+	RegenEvery  int    `json:"regen_every,omitempty" yaml:"regen_every,omitempty"`
+	DepletedMsg string `json:"depleted_msg,omitempty" yaml:"depleted_msg,omitempty"`
 }
 
 type Weapon struct {
@@ -83,9 +100,62 @@ type Armor struct {
 }
 
 type Shop struct {
-	Currency string   `json:"currency,omitempty" yaml:"currency,omitempty"`
-	Markup   int      `json:"markup,omitempty" yaml:"markup,omitempty"` // percent added when player buys
-	Stock    []string `json:"stock,omitempty" yaml:"stock,omitempty"`
+	Currency string `json:"currency,omitempty" yaml:"currency,omitempty"`
+	Markup   int    `json:"markup,omitempty" yaml:"markup,omitempty"`
+	Purse    int    `json:"purse,omitempty" yaml:"purse,omitempty"`
+	MaxPurse int    `json:"max_purse,omitempty" yaml:"max_purse,omitempty"`
+	Dynamic  bool   `json:"dynamic,omitempty" yaml:"dynamic,omitempty"`
+	// Finite stays set when the balance hits zero. A missing purse is an unlimited buyer.
+	Finite bool     `json:"finite,omitempty" yaml:"finite,omitempty"`
+	Stock  []string `json:"stock,omitempty" yaml:"stock,omitempty"`
+}
+
+// UnmarshalYAML marks a till finite when the pack sets purse or max_purse, including 0.
+func (s *Shop) UnmarshalYAML(node *yaml.Node) error {
+	type alias Shop
+	var raw alias
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	*s = Shop(raw)
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		switch node.Content[i].Value {
+		case "purse", "max_purse":
+			s.Finite = true
+		case "dynamic":
+			if s.Dynamic {
+				s.Finite = true
+			}
+		}
+	}
+	return nil
+}
+
+// UnmarshalJSON keeps a saved till finite after the balance reaches zero.
+func (s *Shop) UnmarshalJSON(data []byte) error {
+	type alias Shop
+	var raw alias
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*s = Shop(raw)
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	if _, ok := keys["purse"]; ok {
+		s.Finite = true
+	}
+	if _, ok := keys["max_purse"]; ok {
+		s.Finite = true
+	}
+	if s.Dynamic {
+		s.Finite = true
+	}
+	return nil
 }
 
 type Entity struct {
@@ -105,21 +175,24 @@ type Entity struct {
 	HasCoords bool            `json:"has_coords,omitempty" yaml:"has_coords,omitempty"`
 	Exits     map[string]Exit `json:"exits,omitempty" yaml:"exits,omitempty"`
 
-	Takeable  bool           `json:"takeable,omitempty" yaml:"takeable,omitempty"`
-	Container bool           `json:"container,omitempty" yaml:"container,omitempty"`
-	Wearable  bool           `json:"wearable,omitempty" yaml:"wearable,omitempty"`
-	Slot      string         `json:"slot,omitempty" yaml:"slot,omitempty"`
-	Closed    bool           `json:"item_closed,omitempty" yaml:"item_closed,omitempty"`
-	Locked    bool           `json:"item_locked,omitempty" yaml:"item_locked,omitempty"`
-	Key       string         `json:"item_key,omitempty" yaml:"item_key,omitempty"`
-	Use       *UseEffect     `json:"use,omitempty" yaml:"use,omitempty"`
-	Weapon    *Weapon        `json:"weapon,omitempty" yaml:"weapon,omitempty"`
-	Armor     *Armor         `json:"armor,omitempty" yaml:"armor,omitempty"`
-	Value     int            `json:"value,omitempty" yaml:"value,omitempty"`
-	Mods      map[string]int `json:"mods,omitempty" yaml:"mods,omitempty"`
-	Hidden    bool           `json:"hidden,omitempty" yaml:"hidden,omitempty"`
-	Notice    int            `json:"notice,omitempty" yaml:"notice,omitempty"`
-	SearchDC  int            `json:"search,omitempty" yaml:"search,omitempty"`
+	Takeable      bool           `json:"takeable,omitempty" yaml:"takeable,omitempty"`
+	Container     bool           `json:"container,omitempty" yaml:"container,omitempty"`
+	Wearable      bool           `json:"wearable,omitempty" yaml:"wearable,omitempty"`
+	Slot          string         `json:"slot,omitempty" yaml:"slot,omitempty"`
+	Closed        bool           `json:"item_closed,omitempty" yaml:"item_closed,omitempty"`
+	Locked        bool           `json:"item_locked,omitempty" yaml:"item_locked,omitempty"`
+	Key           string         `json:"item_key,omitempty" yaml:"item_key,omitempty"`
+	Use           *UseEffect     `json:"use,omitempty" yaml:"use,omitempty"`
+	Weapon        *Weapon        `json:"weapon,omitempty" yaml:"weapon,omitempty"`
+	Armor         *Armor         `json:"armor,omitempty" yaml:"armor,omitempty"`
+	Value         int            `json:"value,omitempty" yaml:"value,omitempty"`
+	Mods          map[string]int `json:"mods,omitempty" yaml:"mods,omitempty"`
+	Durability    int            `json:"durability,omitempty" yaml:"durability,omitempty"`
+	MaxDurability int            `json:"max_durability,omitempty" yaml:"max_durability,omitempty"`
+	Repairable    bool           `json:"repairable,omitempty" yaml:"repairable,omitempty"`
+	Hidden        bool           `json:"hidden,omitempty" yaml:"hidden,omitempty"`
+	Notice        int            `json:"notice,omitempty" yaml:"notice,omitempty"`
+	SearchDC      int            `json:"search,omitempty" yaml:"search,omitempty"`
 
 	AI     *AI               `json:"ai,omitempty" yaml:"ai,omitempty"`
 	Combat *Combat           `json:"combat,omitempty" yaml:"combat,omitempty"`
@@ -148,6 +221,54 @@ type Entity struct {
 	SkillPoints int  `json:"skill_points,omitempty" yaml:"skill_points,omitempty"`
 	AttrPoints  int  `json:"attr_points,omitempty" yaml:"attr_points,omitempty"`
 	Trainer     bool `json:"trainer,omitempty" yaml:"trainer,omitempty"`
+	Repairer    bool `json:"repairer,omitempty" yaml:"repairer,omitempty"`
+	Banker      bool `json:"banker,omitempty" yaml:"banker,omitempty"`
+
+	Bank         map[string]int         `json:"bank,omitempty" yaml:"bank,omitempty"`
+	Recipes      []string               `json:"recipes,omitempty" yaml:"recipes,omitempty"`
+	TeachRecipes map[string]string      `json:"teach_recipes,omitempty" yaml:"teach_recipes,omitempty"`
+	Gather       *GatherNode            `json:"gather,omitempty" yaml:"gather,omitempty"`
+	Quests       map[string]*QuestState `json:"quests,omitempty" yaml:"quests,omitempty"`
+	Loot         []LootDrop             `json:"loot,omitempty" yaml:"loot,omitempty"`
+	Salvage      []SalvageYield         `json:"salvage,omitempty" yaml:"salvage,omitempty"`
+	RepairKit    *RepairKit             `json:"repair_kit,omitempty" yaml:"repair_kit,omitempty"`
+	RespawnEvery int                    `json:"respawn_every,omitempty" yaml:"respawn_every,omitempty"`
+	HomeRoom     ID                     `json:"home_room,omitempty" yaml:"home_room,omitempty"`
+	// SlainBy is the entity that landed the killing blow. Empty means the death had no attacker.
+	SlainBy ID `json:"slain_by,omitempty" yaml:"slain_by,omitempty"`
+}
+
+type LootDrop struct {
+	Item     string `json:"item" yaml:"item"`
+	Chance   int    `json:"chance,omitempty" yaml:"chance,omitempty"`
+	Count    int    `json:"count,omitempty" yaml:"count,omitempty"`
+	SkinOnly bool   `json:"skin_only,omitempty" yaml:"skin_only,omitempty"`
+}
+
+type SalvageYield struct {
+	Item  string `json:"item" yaml:"item"`
+	Count int    `json:"count,omitempty" yaml:"count,omitempty"`
+}
+
+type RepairKit struct {
+	Uses    int    `json:"uses" yaml:"uses"`
+	MaxUses int    `json:"max_uses" yaml:"max_uses"`
+	Skill   string `json:"skill,omitempty" yaml:"skill,omitempty"`
+	DC      int    `json:"dc,omitempty" yaml:"dc,omitempty"`
+	Amount  int    `json:"amount,omitempty" yaml:"amount,omitempty"` // durability points restored (0 = full)
+}
+
+type RespawnTask struct {
+	ProtoID ID    `json:"proto_id" yaml:"proto_id"`
+	RoomID  ID    `json:"room_id" yaml:"room_id"`
+	DueTick int64 `json:"due_tick" yaml:"due_tick"`
+}
+
+type QuestState struct {
+	ID          string         `json:"id" yaml:"id"`
+	Status      string         `json:"status" yaml:"status"` // "active", "completed"
+	Progress    map[string]int `json:"progress,omitempty" yaml:"progress,omitempty"`
+	CompletedAt int64          `json:"completed_at,omitempty" yaml:"completed_at,omitempty"`
 }
 
 type World struct {
@@ -159,6 +280,7 @@ type World struct {
 	NextSeq       int                               `json:"next_seq"`
 	PackID        string                            `json:"pack_id"`
 	WeatherState  string                            `json:"weather_state,omitempty"`
+	Respawns      []RespawnTask                     `json:"respawns,omitempty"`
 	IsAmbientDark func(w *World, room *Entity) bool `json:"-"`
 	IsAmbientLit  func(w *World, room *Entity) bool `json:"-"`
 }
@@ -282,7 +404,8 @@ func (e *Entity) SetRes(key string, r Resource) {
 	if r.Current < 0 {
 		r.Current = 0
 	}
-	if r.Max > 0 && r.Current > r.Max {
+	// A pile is a purse. Current may pass max; the pane shows the amount alone.
+	if !r.Pile && r.Max > 0 && r.Current > r.Max {
 		r.Current = r.Max
 	}
 	e.Resources[key] = r
@@ -410,8 +533,98 @@ func (e *Entity) Clone() *Entity {
 		s.Stock = append([]string{}, e.Shop.Stock...)
 		cp.Shop = &s
 	}
+	if e.Bank != nil {
+		cp.Bank = make(map[string]int, len(e.Bank))
+		for k, v := range e.Bank {
+			cp.Bank[k] = v
+		}
+	}
+	if e.Recipes != nil {
+		cp.Recipes = append([]string{}, e.Recipes...)
+	}
+	if e.TeachRecipes != nil {
+		cp.TeachRecipes = make(map[string]string, len(e.TeachRecipes))
+		for k, v := range e.TeachRecipes {
+			cp.TeachRecipes[k] = v
+		}
+	}
+	if e.Gather != nil {
+		g := *e.Gather
+		cp.Gather = &g
+	}
+	if e.Quests != nil {
+		cp.Quests = make(map[string]*QuestState, len(e.Quests))
+		for k, v := range e.Quests {
+			if v != nil {
+				qCopy := *v
+				if v.Progress != nil {
+					qCopy.Progress = make(map[string]int, len(v.Progress))
+					for pk, pv := range v.Progress {
+						qCopy.Progress[pk] = pv
+					}
+				}
+				cp.Quests[k] = &qCopy
+			}
+		}
+	}
+	if e.Loot != nil {
+		cp.Loot = append([]LootDrop{}, e.Loot...)
+	}
+	if e.Salvage != nil {
+		cp.Salvage = append([]SalvageYield{}, e.Salvage...)
+	}
+	if e.RepairKit != nil {
+		rk := *e.RepairKit
+		cp.RepairKit = &rk
+	}
 	cp.Contents = append([]ID{}, e.Contents...)
+	cp.SlainBy = ""
 	return &cp
+}
+
+func (e *Entity) KnowsRecipe(id string) bool {
+	if e == nil {
+		return false
+	}
+	id = strings.ToLower(strings.TrimSpace(id))
+	for _, r := range e.Recipes {
+		if strings.ToLower(strings.TrimSpace(r)) == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Entity) LearnRecipe(id string) bool {
+	if e == nil || id == "" {
+		return false
+	}
+	if e.KnowsRecipe(id) {
+		return false
+	}
+	e.Recipes = append(e.Recipes, id)
+	return true
+}
+
+func (e *Entity) BankBalance(currency string) int {
+	if e == nil || e.Bank == nil {
+		return 0
+	}
+	return e.Bank[currency]
+}
+
+func (e *Entity) AdjustBank(currency string, delta int) int {
+	if e == nil {
+		return 0
+	}
+	if e.Bank == nil {
+		e.Bank = map[string]int{}
+	}
+	e.Bank[currency] += delta
+	if e.Bank[currency] < 0 {
+		e.Bank[currency] = 0
+	}
+	return e.Bank[currency]
 }
 
 func (w *World) Add(e *Entity) {
@@ -497,6 +710,16 @@ func (w *World) Destroy(id ID) {
 	}
 	for _, c := range append([]ID{}, e.Contents...) {
 		w.Destroy(c)
+	}
+	for _, other := range w.Entities {
+		if other == nil || other.Equipment == nil {
+			continue
+		}
+		for slot, eq := range other.Equipment {
+			if eq == id {
+				delete(other.Equipment, slot)
+			}
+		}
 	}
 	w.Detach(id)
 	delete(w.Entities, id)

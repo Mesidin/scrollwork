@@ -26,6 +26,10 @@ skills:
     label: Notice
     parent: mind
     max: 10
+  - key: crafting
+    label: Crafting
+    parent: mind
+    max: 10
 resources:
   - key: vigor
     label: Vigor
@@ -59,6 +63,11 @@ checks:
     roll: 2d6
     mode: over
     actor: [skill.notice]
+    difficulty: 7
+  crafting:
+    roll: 2d6
+    mode: over
+    actor: [skill.crafting]
     difficulty: 7
 feedback:
   rolls: true

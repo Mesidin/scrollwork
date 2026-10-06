@@ -163,6 +163,19 @@ func (h *Host) bind(L *lua.LState, actor, self *world.Entity) {
 		h.setFlag(L, self)
 		return 0
 	}))
+	L.SetGlobal("learn_recipe", L.NewFunction(func(L *lua.LState) int {
+		recID := L.ToString(1)
+		target := actor
+		if L.GetTop() >= 2 {
+			if id, ok := tableID(L.Get(2)); ok {
+				target = h.World.Get(world.ID(id))
+			}
+		}
+		if target != nil && recID != "" {
+			target.LearnRecipe(recID)
+		}
+		return 0
+	}))
 }
 
 func (h *Host) setFlag(L *lua.LState, self *world.Entity) {

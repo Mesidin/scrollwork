@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	"sudengine/internal/economy"
+	"sudengine/internal/quest"
 	"sudengine/internal/rpg"
 	"sudengine/internal/weather"
 	"sudengine/internal/world"
@@ -79,14 +81,15 @@ type ExitYAML struct {
 }
 
 type ExtraYAML struct {
-	Keywords []string `yaml:"keywords"`
-	Name     string   `yaml:"name"`
-	Short    string   `yaml:"short"`
-	Long     string   `yaml:"long"`
-	Scripts  string   `yaml:"scripts"`
-	Hidden   bool     `yaml:"hidden,omitempty"`
-	Notice   int      `yaml:"notice,omitempty"`
-	Search   int      `yaml:"search,omitempty"`
+	Keywords []string          `yaml:"keywords"`
+	Name     string            `yaml:"name"`
+	Short    string            `yaml:"short"`
+	Long     string            `yaml:"long"`
+	Scripts  string            `yaml:"scripts"`
+	Hidden   bool              `yaml:"hidden,omitempty"`
+	Notice   int               `yaml:"notice,omitempty"`
+	Search   int               `yaml:"search,omitempty"`
+	Gather   *world.GatherNode `yaml:"gather,omitempty"`
 }
 
 type RoomYAML struct {
@@ -104,53 +107,66 @@ type RoomYAML struct {
 	Extras  []ExtraYAML         `yaml:"extras"`
 	Flags   []string            `yaml:"flags"`
 	Scripts string              `yaml:"scripts"`
+	Gather  *world.GatherNode   `yaml:"gather,omitempty"`
 }
 
 type ItemYAML struct {
-	ID        string           `yaml:"id"`
-	Keywords  []string         `yaml:"keywords"`
-	Name      string           `yaml:"name"`
-	Short     string           `yaml:"short"`
-	Long      string           `yaml:"long"`
-	Takeable  *bool            `yaml:"takeable"`
-	Container bool             `yaml:"container"`
-	Wearable  bool             `yaml:"wearable"`
-	Slot      string           `yaml:"slot"`
-	Closed    bool             `yaml:"closed"`
-	Locked    bool             `yaml:"locked"`
-	Key       string           `yaml:"key"`
-	Use       *world.UseEffect `yaml:"use"`
-	Weapon    *world.Weapon    `yaml:"weapon"`
-	Armor     *world.Armor     `yaml:"armor"`
-	Value     int              `yaml:"value"`
-	Mods      map[string]int   `yaml:"mods"`
-	Hidden    bool             `yaml:"hidden,omitempty"`
-	Notice    int              `yaml:"notice,omitempty"`
-	Search    int              `yaml:"search,omitempty"`
-	Flags     []string         `yaml:"flags"`
-	Scripts   string           `yaml:"scripts"`
-	Contains  []string         `yaml:"contains"`
+	ID            string               `yaml:"id"`
+	Keywords      []string             `yaml:"keywords"`
+	Name          string               `yaml:"name"`
+	Short         string               `yaml:"short"`
+	Long          string               `yaml:"long"`
+	Takeable      *bool                `yaml:"takeable"`
+	Container     bool                 `yaml:"container"`
+	Wearable      bool                 `yaml:"wearable"`
+	Slot          string               `yaml:"slot"`
+	Closed        bool                 `yaml:"closed"`
+	Locked        bool                 `yaml:"locked"`
+	Key           string               `yaml:"key"`
+	Use           *world.UseEffect     `yaml:"use"`
+	Weapon        *world.Weapon        `yaml:"weapon"`
+	Armor         *world.Armor         `yaml:"armor"`
+	Value         int                  `yaml:"value"`
+	Mods          map[string]int       `yaml:"mods"`
+	Durability    int                  `yaml:"durability,omitempty"`
+	MaxDurability int                  `yaml:"max_durability,omitempty"`
+	Repairable    *bool                `yaml:"repairable,omitempty"`
+	Hidden        bool                 `yaml:"hidden,omitempty"`
+	Notice        int                  `yaml:"notice,omitempty"`
+	Search        int                  `yaml:"search,omitempty"`
+	Flags         []string             `yaml:"flags"`
+	Scripts       string               `yaml:"scripts"`
+	Contains      []string             `yaml:"contains"`
+	Banker        bool                 `yaml:"banker,omitempty"`
+	Gather        *world.GatherNode    `yaml:"gather,omitempty"`
+	Salvage       []world.SalvageYield `yaml:"salvage,omitempty"`
+	RepairKit     *world.RepairKit     `yaml:"repair_kit,omitempty"`
 }
 
 type NPCYAML struct {
-	ID        string                    `yaml:"id"`
-	Keywords  []string                  `yaml:"keywords"`
-	Name      string                    `yaml:"name"`
-	Short     string                    `yaml:"short"`
-	Long      string                    `yaml:"long"`
-	AI        *world.AI                 `yaml:"ai"`
-	Combat    *world.Combat             `yaml:"combat"`
-	Topics    map[string]string         `yaml:"topics"`
-	Attrs     map[string]int            `yaml:"attrs"`
-	Resources map[string]world.Resource `yaml:"resources"`
-	Skills    map[string]int            `yaml:"skills"`
-	Oppose    map[string]int            `yaml:"oppose"`
-	XP        int                       `yaml:"xp"`
-	Trainer   bool                      `yaml:"trainer"`
-	Flags     []string                  `yaml:"flags"`
-	Tags      []string                  `yaml:"tags"`
-	Scripts   string                    `yaml:"scripts"`
-	Shop      *world.Shop               `yaml:"shop"`
+	ID           string                    `yaml:"id"`
+	Keywords     []string                  `yaml:"keywords"`
+	Name         string                    `yaml:"name"`
+	Short        string                    `yaml:"short"`
+	Long         string                    `yaml:"long"`
+	AI           *world.AI                 `yaml:"ai"`
+	Combat       *world.Combat             `yaml:"combat"`
+	Topics       map[string]string         `yaml:"topics"`
+	TeachRecipes map[string]string         `yaml:"teach_recipes,omitempty"`
+	Attrs        map[string]int            `yaml:"attrs"`
+	Resources    map[string]world.Resource `yaml:"resources"`
+	Skills       map[string]int            `yaml:"skills"`
+	Oppose       map[string]int            `yaml:"oppose"`
+	XP           int                       `yaml:"xp"`
+	Trainer      bool                      `yaml:"trainer"`
+	Repairer     bool                      `yaml:"repairer,omitempty"`
+	Banker       bool                      `yaml:"banker,omitempty"`
+	Flags        []string                  `yaml:"flags"`
+	Tags         []string                  `yaml:"tags"`
+	Scripts      string                    `yaml:"scripts"`
+	Shop         *world.Shop               `yaml:"shop"`
+	Loot         []world.LootDrop          `yaml:"loot,omitempty"`
+	RespawnEvery int                       `yaml:"respawn_every,omitempty"`
 }
 
 type Pack struct {
@@ -160,6 +176,8 @@ type Pack struct {
 	RPG       rpg.Schema
 	Time      weather.TimeConfig
 	Weather   weather.WeatherConfig
+	Recipes   []economy.Recipe
+	Quests    []quest.Quest
 	Rooms     []RoomYAML
 	Items     []ItemYAML
 	NPCs      []NPCYAML
@@ -276,6 +294,24 @@ func Load(dir string) (*Pack, error) {
 		return nil, err
 	}
 
+	if err := loadRecipes(filepath.Join(dir, "recipes.yaml"), &p.Recipes); err != nil {
+		return nil, err
+	}
+	if len(p.Recipes) == 0 {
+		if err := loadRecipes(filepath.Join(dir, "world", "recipes.yaml"), &p.Recipes); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := loadQuests(filepath.Join(dir, "quests.yaml"), &p.Quests); err != nil {
+		return nil, err
+	}
+	if len(p.Quests) == 0 {
+		if err := loadQuests(filepath.Join(dir, "world", "quests.yaml"), &p.Quests); err != nil {
+			return nil, err
+		}
+	}
+
 	abDir := filepath.Join(dir, "abilities")
 	if entries, err := os.ReadDir(abDir); err == nil {
 		for _, e := range entries {
@@ -358,6 +394,94 @@ func loadList[T any](path string, dest *[]T) error {
 	return yaml.Unmarshal(b, dest)
 }
 
+func loadRecipes(path string, dest *[]economy.Recipe) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(string(b)) == "" {
+		return nil
+	}
+	var node yaml.Node
+	if err := yaml.Unmarshal(b, &node); err != nil {
+		return fmt.Errorf("recipes.yaml: %w", err)
+	}
+	doc := node
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		doc = *node.Content[0]
+	}
+	switch doc.Kind {
+	case yaml.SequenceNode:
+		var list []economy.Recipe
+		if err := doc.Decode(&list); err != nil {
+			return fmt.Errorf("recipes.yaml: %w", err)
+		}
+		*dest = list
+		return nil
+	case yaml.MappingNode:
+		var wrapped struct {
+			Recipes []economy.Recipe `yaml:"recipes"`
+		}
+		if err := doc.Decode(&wrapped); err != nil {
+			return fmt.Errorf("recipes.yaml: %w", err)
+		}
+		if wrapped.Recipes == nil {
+			return fmt.Errorf("recipes.yaml: expected a list or a recipes: list")
+		}
+		*dest = wrapped.Recipes
+		return nil
+	default:
+		return fmt.Errorf("recipes.yaml: expected a list or a recipes: list")
+	}
+}
+
+func loadQuests(path string, dest *[]quest.Quest) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(string(b)) == "" {
+		return nil
+	}
+	var node yaml.Node
+	if err := yaml.Unmarshal(b, &node); err != nil {
+		return fmt.Errorf("quests.yaml: %w", err)
+	}
+	doc := node
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		doc = *node.Content[0]
+	}
+	switch doc.Kind {
+	case yaml.SequenceNode:
+		var list []quest.Quest
+		if err := doc.Decode(&list); err != nil {
+			return fmt.Errorf("quests.yaml: %w", err)
+		}
+		*dest = list
+		return nil
+	case yaml.MappingNode:
+		var wrapped struct {
+			Quests []quest.Quest `yaml:"quests"`
+		}
+		if err := doc.Decode(&wrapped); err != nil {
+			return fmt.Errorf("quests.yaml: %w", err)
+		}
+		if wrapped.Quests == nil {
+			return fmt.Errorf("quests.yaml: expected a list or a quests: list")
+		}
+		*dest = wrapped.Quests
+		return nil
+	default:
+		return fmt.Errorf("quests.yaml: expected a list or a quests: list")
+	}
+}
+
 func (p *Pack) Instantiate() (*world.World, error) {
 	w := world.New()
 	w.PackID = p.Meta.ID
@@ -397,6 +521,7 @@ func (p *Pack) Instantiate() (*world.World, error) {
 			if err != nil {
 				return nil, fmt.Errorf("room %s npc %s: %w", r.ID, id, err)
 			}
+			mob.HomeRoom = roomID
 			if mob.Shop != nil {
 				for _, sid := range mob.Shop.Stock {
 					if _, err := w.Spawn(world.ID(sid), mob.ID); err != nil {
@@ -423,6 +548,7 @@ func (p *Pack) Instantiate() (*world.World, error) {
 			}
 		}
 	}
+	p.RPG.StampPiles(w)
 	return w, nil
 }
 
@@ -463,6 +589,7 @@ func SpawnPlayer(w *world.World, p *Pack, name, raceID, roleID string) *world.En
 	if w.StartRoom != "" {
 		_ = w.Move(e.ID, w.StartRoom)
 	}
+	p.RPG.StampPiles(w)
 	return e
 }
 
@@ -472,29 +599,37 @@ func itemFromYAML(it ItemYAML) *world.Entity {
 		take = *it.Takeable
 	}
 	e := &world.Entity{
-		ID:        world.ID(it.ID),
-		Kind:      world.KindItem,
-		Keywords:  it.Keywords,
-		Name:      it.Name,
-		Short:     it.Short,
-		Long:      it.Long,
-		Takeable:  take,
-		Container: it.Container,
-		Wearable:  it.Wearable,
-		Slot:      it.Slot,
-		Closed:    it.Closed,
-		Locked:    it.Locked,
-		Key:       it.Key,
-		Use:       it.Use,
-		Weapon:    it.Weapon,
-		Armor:     it.Armor,
-		Value:     it.Value,
-		Mods:      it.Mods,
-		Hidden:    it.Hidden,
-		Notice:    it.Notice,
-		SearchDC:  it.Search,
-		Scripts:   it.Scripts,
-		Flags:     map[string]bool{},
+		ID:            world.ID(it.ID),
+		Kind:          world.KindItem,
+		Keywords:      it.Keywords,
+		Name:          it.Name,
+		Short:         it.Short,
+		Long:          it.Long,
+		Takeable:      take,
+		Container:     it.Container,
+		Wearable:      it.Wearable,
+		Slot:          it.Slot,
+		Closed:        it.Closed,
+		Locked:        it.Locked,
+		Key:           it.Key,
+		Use:           it.Use,
+		Weapon:        it.Weapon,
+		Armor:         it.Armor,
+		Value:         it.Value,
+		Mods:          it.Mods,
+		Hidden:        it.Hidden,
+		Notice:        it.Notice,
+		SearchDC:      it.Search,
+		Durability:    it.Durability,
+		MaxDurability: it.MaxDurability,
+		Scripts:       it.Scripts,
+		Flags:         map[string]bool{},
+	}
+	if it.Repairable != nil {
+		e.Repairable = *it.Repairable
+	}
+	if e.Durability == 0 && e.MaxDurability > 0 {
+		e.Durability = e.MaxDurability
 	}
 	if e.Short == "" {
 		e.Short = e.Name
@@ -502,37 +637,49 @@ func itemFromYAML(it ItemYAML) *world.Entity {
 	for _, f := range it.Flags {
 		e.Flags[f] = true
 	}
+	e.Banker = it.Banker
+	e.Gather = it.Gather
+	e.Salvage = it.Salvage
+	e.RepairKit = it.RepairKit
 	return e
 }
 
 func npcFromYAML(n NPCYAML) *world.Entity {
 	e := &world.Entity{
-		ID:        world.ID(n.ID),
-		Kind:      world.KindMobile,
-		Keywords:  n.Keywords,
-		Name:      n.Name,
-		Short:     n.Short,
-		Long:      n.Long,
-		AI:        n.AI,
-		Combat:    n.Combat,
-		Topics:    n.Topics,
-		Attrs:     n.Attrs,
-		Resources: n.Resources,
-		Skills:    n.Skills,
-		Oppose:    n.Oppose,
-		XP:        n.XP,
-		Trainer:   n.Trainer,
-		Tags:      n.Tags,
-		Scripts:   n.Scripts,
-		Shop:      n.Shop,
-		Flags:     map[string]bool{},
-		Takeable:  false,
+		ID:           world.ID(n.ID),
+		Kind:         world.KindMobile,
+		Keywords:     n.Keywords,
+		Name:         n.Name,
+		Short:        n.Short,
+		Long:         n.Long,
+		AI:           n.AI,
+		Combat:       n.Combat,
+		Topics:       n.Topics,
+		TeachRecipes: n.TeachRecipes,
+		Attrs:        n.Attrs,
+		Resources:    n.Resources,
+		Skills:       n.Skills,
+		Oppose:       n.Oppose,
+		XP:           n.XP,
+		Trainer:      n.Trainer,
+		Repairer:     n.Repairer,
+		Banker:       n.Banker,
+		Tags:         n.Tags,
+		Scripts:      n.Scripts,
+		Shop:         n.Shop,
+		Loot:         n.Loot,
+		RespawnEvery: n.RespawnEvery,
+		Flags:        map[string]bool{},
+		Takeable:     false,
 	}
 	if e.Short == "" {
 		e.Short = e.Name
 	}
 	for _, f := range n.Flags {
 		e.Flags[f] = true
+	}
+	if e.Shop != nil && (e.Shop.Finite || e.Shop.Dynamic || e.Shop.MaxPurse > 0 || e.Shop.Purse > 0) {
+		e.Shop.Finite = true
 	}
 	if e.Combat != nil && e.Combat.RoundSpeed == 0 {
 		e.Combat.RoundSpeed = 4
@@ -581,6 +728,7 @@ func roomFromYAML(r RoomYAML) *world.Entity {
 	for _, f := range r.Flags {
 		e.Flags[f] = true
 	}
+	e.Gather = r.Gather
 	return e
 }
 
@@ -605,6 +753,7 @@ func extraToEntity(roomID string, extra ExtraYAML) *world.Entity {
 		Hidden:   extra.Hidden,
 		Notice:   extra.Notice,
 		SearchDC: extra.Search,
+		Gather:   extra.Gather,
 		Takeable: false,
 	}
 }
@@ -705,6 +854,12 @@ func (p *Pack) write(all bool) error {
 			return err
 		}
 	}
+	if err := writeOptionalList(dir, "recipes.yaml", len(p.Recipes), p.Recipes); err != nil {
+		return err
+	}
+	if err := writeOptionalList(dir, "quests.yaml", len(p.Quests), p.Quests); err != nil {
+		return err
+	}
 	if all {
 		for k, body := range p.Help {
 			name := k + ".md"
@@ -724,6 +879,32 @@ func (p *Pack) write(all bool) error {
 	}
 	// Lua files are never rewritten.
 	return nil
+}
+
+// writeOptionalList rewrites a list file when it has rows or already exists.
+// An empty list becomes [] so the next load does not resurrect a deleted file.
+// A pack that never had the file is left without one.
+func writeOptionalList(dir, name string, n int, v any) error {
+	path, exists := optionalListPath(dir, name)
+	if n == 0 && !exists {
+		return nil
+	}
+	if n == 0 {
+		return os.WriteFile(path, []byte("[]\n"), 0o644)
+	}
+	return writeYAML(path, v)
+}
+
+func optionalListPath(dir, name string) (string, bool) {
+	worldPath := filepath.Join(dir, "world", name)
+	rootPath := filepath.Join(dir, name)
+	if _, err := os.Stat(worldPath); err == nil {
+		return worldPath, true
+	}
+	if _, err := os.Stat(rootPath); err == nil {
+		return rootPath, true
+	}
+	return rootPath, false
 }
 
 func writeYAML(path string, v any) error {
@@ -752,6 +933,7 @@ func (p *Pack) SyncFromWorld(w *world.World) {
 			Exits:   map[string]ExitYAML{},
 			Flags:   flagList(e),
 			Scripts: e.Scripts,
+			Gather:  e.Gather,
 		}
 		c := true
 		ry.Coords = &c
@@ -795,6 +977,7 @@ func (p *Pack) SyncFromWorld(w *world.World) {
 					Hidden:   c.Hidden,
 					Notice:   c.Notice,
 					Search:   c.SearchDC,
+					Gather:   c.Gather,
 				})
 			}
 		}
@@ -820,53 +1003,80 @@ func (p *Pack) SyncFromWorld(w *world.World) {
 		e := w.Protos[world.ID(id)]
 		take := e.Takeable
 		p.Items = append(p.Items, ItemYAML{
-			ID:        string(e.ID),
-			Keywords:  e.Keywords,
-			Name:      e.Name,
-			Short:     e.Short,
-			Long:      e.Long,
-			Takeable:  &take,
-			Container: e.Container,
-			Wearable:  e.Wearable,
-			Slot:      e.Slot,
-			Closed:    e.Closed,
-			Locked:    e.Locked,
-			Key:       e.Key,
-			Use:       e.Use,
-			Weapon:    e.Weapon,
-			Armor:     e.Armor,
-			Value:     e.Value,
-			Mods:      e.Mods,
-			Hidden:    e.Hidden,
-			Notice:    e.Notice,
-			Search:    e.SearchDC,
-			Flags:     flagList(e),
-			Scripts:   e.Scripts,
+			ID:            string(e.ID),
+			Keywords:      e.Keywords,
+			Name:          e.Name,
+			Short:         e.Short,
+			Long:          e.Long,
+			Takeable:      &take,
+			Container:     e.Container,
+			Wearable:      e.Wearable,
+			Slot:          e.Slot,
+			Closed:        e.Closed,
+			Locked:        e.Locked,
+			Key:           e.Key,
+			Use:           e.Use,
+			Weapon:        e.Weapon,
+			Armor:         e.Armor,
+			Value:         e.Value,
+			Mods:          e.Mods,
+			Durability:    e.Durability,
+			MaxDurability: e.MaxDurability,
+			Repairable:    repairableFlag(e),
+			Hidden:        e.Hidden,
+			Notice:        e.Notice,
+			Search:        e.SearchDC,
+			Flags:         flagList(e),
+			Scripts:       e.Scripts,
+			Banker:        e.Banker,
+			Gather:        e.Gather,
+			Salvage:       e.Salvage,
+			RepairKit:     e.RepairKit,
 		})
 	}
 	for _, id := range npcIDs {
 		e := w.Protos[world.ID(id)]
 		p.NPCs = append(p.NPCs, NPCYAML{
-			ID:        string(e.ID),
-			Keywords:  e.Keywords,
-			Name:      e.Name,
-			Short:     e.Short,
-			Long:      e.Long,
-			AI:        e.AI,
-			Combat:    e.Combat,
-			Topics:    e.Topics,
-			Attrs:     e.Attrs,
-			Resources: e.Resources,
-			Skills:    e.Skills,
-			Oppose:    e.Oppose,
-			XP:        e.XP,
-			Trainer:   e.Trainer,
-			Flags:     flagList(e),
-			Tags:      e.Tags,
-			Scripts:   e.Scripts,
-			Shop:      e.Shop,
+			ID:           string(e.ID),
+			Keywords:     e.Keywords,
+			Name:         e.Name,
+			Short:        e.Short,
+			Long:         e.Long,
+			AI:           e.AI,
+			Combat:       e.Combat,
+			Topics:       e.Topics,
+			TeachRecipes: e.TeachRecipes,
+			Attrs:        e.Attrs,
+			Resources:    e.Resources,
+			Skills:       e.Skills,
+			Oppose:       e.Oppose,
+			XP:           e.XP,
+			Trainer:      e.Trainer,
+			Repairer:     e.Repairer,
+			Banker:       e.Banker,
+			Flags:        flagList(e),
+			Tags:         e.Tags,
+			Scripts:      e.Scripts,
+			Shop:         e.Shop,
+			Loot:         e.Loot,
+			RespawnEvery: e.RespawnEvery,
 		})
 	}
+}
+
+func (p *Pack) StampPiles(w *world.World) {
+	if p == nil {
+		return
+	}
+	p.RPG.StampPiles(w)
+}
+
+func repairableFlag(e *world.Entity) *bool {
+	if e == nil || !e.Repairable {
+		return nil
+	}
+	v := true
+	return &v
 }
 
 func flagList(e *world.Entity) []string {

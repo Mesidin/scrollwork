@@ -1,0 +1,58 @@
+- id: clear_wolves
+  title: Clear the Wolves
+  desc: Sergeant Bram wants the grey wolves in the thicket cleared out before they attack the village.
+  giver: hollow.bram
+  turnin: hollow.bram
+  objectives:
+    - id: slay_wolves
+      desc: Slay wolves in the thicket
+      kind: kill
+      target: wolf
+      count: 2
+  rewards:
+    xp: 20
+    currency: coin
+    amount: 15
+    recipes: [craft_cudgel]
+    message: Bram nods approvingly. "Good work with the wolves. You've earned your pay, and you know your way around a cudgel now."
+
+- id: lost_silver
+  title: Lost Silver
+  desc: Find the silver ring lost in the thicket thorn and return it to Bram.
+  giver: hollow.bram
+  turnin: hollow.bram
+  objectives:
+    - id: find_ring
+      desc: Recover the silver ring
+      kind: collect
+      target: hollow.ring
+      count: 1
+      consume: true
+  rewards:
+    xp: 15
+    currency: coin
+    amount: 10
+    message: Bram takes the ring and turns it over in his calloused palm. "Much obliged. Didn't want the dirt getting it."
+
+- id: scout_camp
+  title: Scout the Brigand Camp
+  desc: Venture past the thicket to scout the camp and defeat the brigand leader.
+  giver: hollow.bram
+  turnin: hollow.bram
+  requires_quest: [clear_wolves]
+  objectives:
+    - id: visit_camp
+      desc: Scout the brigand camp
+      kind: visit
+      target: hollow.camp
+    - id: slay_brigand
+      desc: Defeat the brigand leader
+      kind: kill
+      target: hollow.brigand
+      count: 1
+  rewards:
+    xp: 35
+    currency: coin
+    amount: 25
+    items: [hollow.cloak]
+    message: Bram sighs with relief. "The road north will be peaceful now. Take this cloak as token of our thanks."

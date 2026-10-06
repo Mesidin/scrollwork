@@ -25,7 +25,7 @@
   y: 0
   z: 0
   flags: [outdoor]
-  items: [hollow.sword, hollow.cloak, hollow.lantern]
+  items: [hollow.sword, hollow.cloak, hollow.lantern, hollow.branch, hollow.brambles]
   exits:
     west:
       to: hollow.square
@@ -43,7 +43,7 @@
   z: 0
   flags: [outdoor]
   npcs: [hollow.wolf, hollow.wolf-2]
-  items: [hollow.ring]
+  items: [hollow.ring, hollow.brambles]
   exits:
     south:
       to: hollow.lane
@@ -69,10 +69,12 @@
   short: the cottage
   long: |
     A single room and a cold hearth. The window looks onto the square.
+    A rough workbench and an iron strongbox sit against the west wall.
   x: 0
   y: -1
   z: 0
   flags: [windowed]
+  items: [hollow.workbench, hollow.strips, hollow.strongbox, hollow.manual, hollow.whetstone]
   exits:
     north:
       to: hollow.square

@@ -4,10 +4,23 @@
   short: Sergeant Bram
   long: Grey at the temples. He watches your feet more than your face.
   trainer: true
+  repairer: true
+  shop:
+    currency: coin
+    purse: 30
+    max_purse: 100
+    dynamic: true
   topics:
-    train: "Say train and the skill. Footwork, melee, notice. Coin on the bench."
+    train: "Say train and the skill. Footwork, melee, notice, crafting. Coin on the bench."
+    repair: "Keep your steel sharp and your leather sound. I can mend what gets battered."
+    crafting: "Whittling a good cudgel takes patience and a sharp eye. Mind the grain of the oak."
+    cudgel: "A heavy hardwood branch from the thicket makes a sturdy cudgel if shaped right."
+    bank: "The village strongbox sits in the cottage south of the square. Store your extra coin there so the wolves don't get it."
     wolf: "Two of them in the thicket. The camp north of that is worse."
     ring: "If you see silver in the thorn, it was not left for the wolves."
+  teach_recipes:
+    crafting: craft_cudgel
+    cudgel: craft_cudgel
   ai:
     profile: sentinel
 
@@ -42,6 +55,11 @@
     vigor:
       current: 10
       max: 10
+  loot:
+    - item: hollow.pelt
+      skin_only: true
+      chance: 100
+      count: 1
 
 - id: hollow.wolf-2
   keywords: [wolf, second, pair]
@@ -73,6 +91,11 @@
     vigor:
       current: 8
       max: 8
+  loot:
+    - item: hollow.pelt
+      skin_only: true
+      chance: 100
+      count: 1
 
 - id: hollow.brigand
   keywords: [brigand, bandit, man]
@@ -103,3 +126,8 @@
     vigor:
       current: 18
       max: 18
+  respawn_every: 40
+  loot:
+    - item: hollow.strips
+      chance: 100
+      count: 2

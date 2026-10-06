@@ -36,4 +36,12 @@ func TestParsePackVerb(t *testing.T) {
 	if p.Verb != "use" || p.Rest != "lamp" {
 		t.Fatalf("light lamp -> %q %q", p.Verb, p.Rest)
 	}
+	p = Parse("lshop", nil)
+	if p.Verb != "list" {
+		t.Fatalf("lshop -> %q", p.Verb)
+	}
+	p = Parse("rlist", nil)
+	if p.Verb != "recipes" {
+		t.Fatalf("rlist -> %q", p.Verb)
+	}
 }

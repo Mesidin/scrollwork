@@ -62,7 +62,34 @@ say <text>           or  'text
 emote <text>         or  :text
 ask <who> about <topic>
 talk <who>            list topics they might know
-list / buy / sell     if someone in the room has a shop
+```
+
+## Economy & Crafting
+
+```
+list / lshop         browse merchant inventory and till amount
+buy <item> [from <who>]
+sell <item> [to <who>]
+deposit <amount|all> store coin in a local bank or vault
+withdraw <amount|all> retrieve coin from your vault
+balance / bank / account check stored currency in your vault
+repair               list damaged items and costs at a repairer
+repair <item> / all  restore equipment you can afford; all names what is left
+repair <item> with <kit> mend equipment in the field using a repair kit
+recipes / rlist      list known recipes and station/material readiness
+craft / make <recipe> craft an item at a required station
+gather / forage [node] harvest natural resources; perception boosts yield
+skin / butcher [corpse] harvest skin/pelts from fallen beasts
+salvage <item>       break down an item into crafting components
+```
+
+## Quests
+
+```
+quests / tasks / journal     list active and completed quests with objective progress
+quest <id|title>             show full quest details, objectives, and rewards
+quest accept <id|title>      accept an offered quest from an NPC
+quest complete <id|title>    turn in a completed quest to receive rewards
 ```
 
 ## Fighting

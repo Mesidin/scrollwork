@@ -108,6 +108,19 @@ func TestShowDefaults(t *testing.T) {
 	}
 }
 
+func TestBundleKeepsPile(t *testing.T) {
+	e := &world.Entity{}
+	s := Schema{Resources: []ResDef{{Key: "coin", Pile: true, Max: 0}}}
+	ApplyDefaults(e, s)
+	ApplyBundle(e, Bundle{Resources: map[string]int{"coin": 12}})
+	if !e.Res("coin").Pile || e.Res("coin").Current != 12 {
+		t.Fatalf("%+v", e.Res("coin"))
+	}
+	if e.AdjustRes("coin", 8) != 20 {
+		t.Fatalf("earned %d", e.Res("coin").Current)
+	}
+}
+
 func TestOmittedCheck(t *testing.T) {
 	s := Schema{}
 	_, ok := s.Resolve(nil, nil, nil, "escape", 0, false)

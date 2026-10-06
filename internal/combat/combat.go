@@ -5,6 +5,7 @@ import (
 	"math/rand"
 
 	"sudengine/internal/dice"
+	"sudengine/internal/economy"
 	"sudengine/internal/rpg"
 	"sudengine/internal/world"
 )
@@ -133,8 +134,34 @@ func (e *Engine) swing(w *world.World, att, def *world.Entity) {
 		dmg = 1
 	}
 	def.AdjustRes(primary, -dmg)
+
+	if att.Equipment != nil {
+		if id, ok := att.Equipment["wield"]; ok {
+			if wep := w.Get(id); wep != nil && wep.MaxDurability > 0 {
+				if economy.Degrade(wep, 1) && e.Emit != nil && att.Kind == world.KindPlayer {
+					e.Emit(att, "alert", fmt.Sprintf("Your %s breaks!", gearName(wep)))
+				}
+			}
+		}
+	}
+	if def.Equipment != nil {
+		for slot, id := range def.Equipment {
+			if slot == "wield" {
+				continue
+			}
+			if arm := w.Get(id); arm != nil && arm.Armor != nil && arm.MaxDurability > 0 {
+				if economy.Degrade(arm, 1) && e.Emit != nil && def.Kind == world.KindPlayer {
+					e.Emit(def, "alert", fmt.Sprintf("Your %s breaks!", gearName(arm)))
+				}
+			}
+		}
+	}
+
 	e.report(w, att, def, atk, dmg, hit, false)
 	if !def.Alive(primary) {
+		if att != nil {
+			def.SlainBy = att.ID
+		}
 		e.Stop(att)
 		e.Stop(def)
 		if e.Emit != nil {
@@ -160,6 +187,9 @@ func (e *Engine) Damage(w *world.World, att, def *world.Entity, amount int, verb
 		e.Emit(att, "narrative", fmt.Sprintf("You %s %s for %d.", verb, def.Display(), amount))
 	}
 	if !def.Alive(primary) {
+		if att != nil {
+			def.SlainBy = att.ID
+		}
 		e.Stop(att)
 		e.Stop(def)
 	}
@@ -220,6 +250,9 @@ func attackOf(w *world.World, att *world.Entity, e *Engine) world.Attack {
 	if att.Equipment != nil {
 		if id, ok := att.Equipment["wield"]; ok {
 			if it := w.Get(id); it != nil && it.Weapon != nil && it.Weapon.Damage != "" {
+				if it.HasFlag("broken") || (it.MaxDurability > 0 && it.Durability <= 0) {
+					return world.Attack{Name: "hit", Damage: "1d2"}
+				}
 				verb := it.Weapon.Verb
 				if verb == "" {
 					verb = "hit"
@@ -248,8 +281,21 @@ func armorSoak(w *world.World, def *world.Entity) int {
 	n := 0
 	for _, id := range def.Equipment {
 		if it := w.Get(id); it != nil && it.Armor != nil {
+			if it.HasFlag("broken") || (it.MaxDurability > 0 && it.Durability <= 0) {
+				continue
+			}
 			n += it.Armor.Soak
 		}
 	}
 	return n
+}
+
+func gearName(e *world.Entity) string {
+	if e == nil {
+		return "gear"
+	}
+	if e.Name != "" {
+		return e.Name
+	}
+	return e.Display()
 }

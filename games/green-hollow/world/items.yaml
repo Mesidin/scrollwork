@@ -24,6 +24,9 @@
     hit: "You slash {name}."
     miss: "You miss {name}."
   value: 8
+  durability: 40
+  max_durability: 40
+  repairable: true
 
 - id: hollow.cloak
   keywords: [cloak, cape]
@@ -38,6 +41,12 @@
   armor:
     soak: 1
   value: 6
+  durability: 25
+  max_durability: 25
+  repairable: true
+  salvage:
+    - item: hollow.strips
+      count: 2
 
 - id: hollow.ring
   keywords: [ring, silver]
@@ -49,3 +58,122 @@
   notice: 10
   search: 7
   value: 15
+
+- id: hollow.branch
+  keywords: [branch, wood, stick]
+  name: sturdy branch
+  short: a sturdy branch
+  long: Fallen hardwood from the thicket, seasoned and straight.
+  takeable: true
+  value: 2
+
+- id: hollow.strips
+  keywords: [strips, linen, cloth]
+  name: linen strips
+  short: linen strips
+  long: Strips of torn linen suitable for binding or wrapping.
+  takeable: true
+  value: 1
+
+- id: hollow.club
+  keywords: [club, cudgel]
+  name: carved cudgel
+  short: a carved cudgel
+  long: A heavy club whittled from seasoned hardwood.
+  takeable: true
+  wearable: true
+  slot: wield
+  weapon:
+    damage: 1d6
+    verb: crush
+    skill: melee
+    hit: "You strike {name} with the cudgel."
+    miss: "You swing wide of {name}."
+  durability: 35
+  max_durability: 35
+  repairable: true
+  value: 5
+  salvage:
+    - item: hollow.branch
+      count: 1
+
+- id: hollow.torch
+  keywords: [torch]
+  name: pitch torch
+  short: a pitch torch
+  long: Wood wrapped with resin-soaked linen. It will light the dark.
+  takeable: true
+  use:
+    toggle_flag: light
+    message: The torch catches fire and flares brightly.
+    message_off: You quench the torch.
+  durability: 20
+  max_durability: 20
+  repairable: true
+  value: 3
+
+- id: hollow.workbench
+  keywords: [workbench, bench]
+  name: rough workbench
+  short: a rough workbench
+  long: A sturdy wooden workbench with carving knives and a vise.
+  takeable: false
+
+- id: hollow.strongbox
+  keywords: [strongbox, chest, vault, box, bank]
+  name: iron strongbox
+  short: an iron strongbox
+  long: A heavy iron-banded strongbox bolted to the floor. The village uses it as a common vault to safeguard coin.
+  takeable: false
+  banker: true
+
+- id: hollow.manual
+  keywords: [manual, notes, pamphlet, book]
+  name: carpenter's notes
+  short: carpenter's notes
+  long: Yellowed sheets with hand-drawn sketches showing how to whittle a weighted cudgel from hardwood.
+  takeable: true
+  use:
+    learn_recipe: craft_cudgel
+    message: You study the carpenter's notes carefully and master the craft of whittling a cudgel.
+
+- id: hollow.brambles
+  keywords: [brambles, briars, thicket, bushes, branches]
+  name: thicket brambles
+  short: thicket brambles
+  long: Wild hazel and thorn bushes tangled with dry hardwood branches.
+  takeable: false
+  gather:
+    resource: hollow.branch
+    name: dry branches
+    skill: notice
+    difficulty: 6
+    bonus_dc: 9
+    remaining: 3
+    max: 3
+    regen_every: 40
+
+- id: hollow.pelt
+  keywords: [pelt, wolf, fur, hide]
+  name: wolf pelt
+  short: a thick wolf pelt
+  long: Coarse grey wolf fur, thick enough to turn winter wind.
+  takeable: true
+  value: 6
+  salvage:
+    - item: hollow.strips
+      count: 2
+
+- id: hollow.whetstone
+  keywords: [whetstone, stone, sharpener]
+  name: whetstone
+  short: an oily whetstone
+  long: A fine-grained whetstone for honing blades in the field.
+  takeable: true
+  value: 10
+  repair_kit:
+    uses: 3
+    max_uses: 3
+    skill: crafting
+    dc: 6
+    amount: 15

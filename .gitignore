@@ -2,6 +2,7 @@
 /bin/
 saves/
 *.exe
+*.exe~
 .DS_Store
 *.test
 coverage.out

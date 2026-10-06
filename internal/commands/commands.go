@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 
 	"sudengine/internal/dice"
 	"sudengine/internal/docs"
+	"sudengine/internal/economy"
 	"sudengine/internal/pack"
 	"sudengine/internal/protocol"
+	"sudengine/internal/quest"
 	"sudengine/internal/rpg"
 	"sudengine/internal/script"
 	"sudengine/internal/weather"
@@ -106,6 +109,17 @@ func init() {
 	register("time", timeCmd)
 	register("weather", weatherCmd)
 	register("sky", weatherCmd)
+	register("repair", repairCmd)
+	register("recipes", recipesCmd)
+	register("craft", craftCmd)
+	register("deposit", depositCmd)
+	register("withdraw", withdrawCmd)
+	register("balance", balanceCmd)
+	register("gather", gatherCmd)
+	register("quests", questsCmd)
+	register("quest", questCmd)
+	register("skin", skinCmd)
+	register("salvage", salvageCmd)
 	for _, d := range []string{"north", "south", "east", "west", "up", "down", "northeast", "northwest", "southeast", "southwest", "in", "out"} {
 		dir := d
 		register(dir, func(c *Context, _ Parsed) { move(c, dir) })
@@ -161,6 +175,13 @@ func showRoom(c *Context, verbose, enter bool) {
 	c.RoomTitle(room.Name)
 	if enter {
 		blowOutFlames(c)
+		checkAutoStarts(c)
+		if c.Pack != nil && len(c.Pack.Quests) > 0 {
+			notices := quest.UpdateVisit(c.Actor, room.ID, c.Pack.Quests, c.World)
+			for _, n := range notices {
+				c.Alert("%s", n.String())
+			}
+		}
 	}
 	lit := c.World.RoomIsLit(room)
 	if !lit {
@@ -245,6 +266,31 @@ func examine(c *Context, p Parsed) {
 		c.Print("%s", strings.TrimSpace(e.Long))
 	} else {
 		c.Print("You see nothing special about %s.", e.Display())
+	}
+	if e.MaxDurability > 0 {
+		cond := economy.Condition(e.Durability, e.MaxDurability, e.HasFlag("broken"))
+		tag := economy.DurabilityTag(e)
+		c.Print("Condition: %s %s.", cond, tag)
+	}
+	if e.Use != nil && e.Use.LearnRecipe != "" {
+		if c.Actor.KnowsRecipe(e.Use.LearnRecipe) {
+			c.Print("You have already mastered the crafting instructions in this.")
+		} else if len(e.Keywords) > 0 {
+			c.Print("It contains crafting instructions. Type 'use %s' to study and learn it.", e.Keywords[0])
+		} else {
+			c.Print("It contains crafting instructions. Type 'use' to study and learn it.")
+		}
+	}
+	if e.Gather != nil {
+		if e.Gather.Remaining > 0 {
+			resName := e.Gather.Name
+			if resName == "" {
+				resName = "resources"
+			}
+			c.Print("It looks like you could gather %s here. Type 'gather' to forage.", resName)
+		} else {
+			c.Print("It looks picked clean for now.")
+		}
 	}
 	if e.Container {
 		if e.Closed {
@@ -342,7 +388,12 @@ func equipment(c *Context, _ Parsed) {
 		if it == nil {
 			continue
 		}
-		c.Print("  %s: %s", s, it.Display())
+		tag := economy.DurabilityTag(it)
+		if tag != "" {
+			c.Print("  %s: %s %s", s, it.Display(), tag)
+		} else {
+			c.Print("  %s: %s", s, it.Display())
+		}
 	}
 }
 
@@ -545,6 +596,30 @@ func get(c *Context, p Parsed) {
 		return
 	}
 	c.Print("You take %s.", e.Display())
+	if c.Pack != nil {
+		for _, q := range c.Pack.Quests {
+			if !quest.IsActive(c.Actor, q) {
+				continue
+			}
+			for _, obj := range q.Objectives {
+				if obj.Kind == quest.KindCollect {
+					match := strings.EqualFold(string(e.PrototypeID), obj.Target) ||
+						e.HasKeyword(strings.ToLower(obj.Target)) ||
+						strings.EqualFold(string(e.ID), obj.Target)
+					if match {
+						cur, need, done := quest.ObjectiveProgress(c.Actor, c.World, q, obj)
+						if done && quest.IsReady(c.Actor, c.World, q) {
+							c.Alert("[Quest Ready for Turn-in: %s]", q.Title)
+						} else if done {
+							c.Alert("[Objective Complete: %s (%d/%d)]", obj.Desc, cur, need)
+						} else {
+							c.Alert("[Objective Progress: %s (%d/%d)]", obj.Desc, cur, need)
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func drop(c *Context, p Parsed) {
@@ -699,9 +774,28 @@ func use(c *Context, p Parsed) {
 		c.Print("Use what?")
 		return
 	}
+	if strings.Contains(strings.ToLower(p.Rest), " on ") {
+		parts := strings.SplitN(p.Rest, " on ", 2)
+		kitStr := strings.TrimSpace(parts[0])
+		itemStr := strings.TrimSpace(parts[1])
+		kit, err := resolve(c, kitStr, world.ScopeInventory)
+		if err == nil && kit.RepairKit != nil {
+			it, err := resolve(c, itemStr, world.ScopeInventory, world.ScopeEquipment)
+			if err != nil {
+				c.Print("%s", err.Error())
+				return
+			}
+			repairWithKit(c, it, kit)
+			return
+		}
+	}
 	e, err := resolve(c, p.Rest, world.ScopeInventory, world.ScopeEquipment, world.ScopeRoom)
 	if err != nil {
 		c.Print("%s", err.Error())
+		return
+	}
+	if e.RepairKit != nil {
+		c.Print("Use %s on what? (Try: use %s on <item>, or repair <item> with %s)", e.Display(), firstWord(e.Name), firstWord(e.Name))
 		return
 	}
 	handled, err := c.Scripts.Call("on_use", c.Actor, e)
@@ -710,6 +804,29 @@ func use(c *Context, p Parsed) {
 		return
 	}
 	if handled {
+		return
+	}
+	if e.Use != nil && e.Use.LearnRecipe != "" {
+		recipeID := e.Use.LearnRecipe
+		learned := c.Actor.LearnRecipe(recipeID)
+		recipeName := recipeID
+		if c.Pack != nil {
+			for _, r := range c.Pack.Recipes {
+				if strings.EqualFold(r.ID, recipeID) {
+					recipeName = r.Name
+					break
+				}
+			}
+		}
+		if learned {
+			msg := e.Use.Message
+			if msg == "" {
+				msg = fmt.Sprintf("You study %s and learn how to craft %s.", e.Display(), recipeName)
+			}
+			c.Print("%s", msg)
+		} else {
+			c.Print("You already know how to craft %s.", recipeName)
+		}
 		return
 	}
 	if e.Use != nil && e.Use.ToggleFlag != "" {
@@ -1033,8 +1150,29 @@ func talk(c *Context, p Parsed) {
 		c.Print("You get no answer.")
 		return
 	}
+	hasQuestOffers := false
+	if c.Pack != nil {
+		for _, q := range c.Pack.Quests {
+			turnInID := q.TurnIn
+			if turnInID == "" {
+				turnInID = q.Giver
+			}
+			isTurnIn := strings.EqualFold(string(npc.ID), turnInID) || strings.EqualFold(string(npc.PrototypeID), turnInID) || npc.HasKeyword(strings.ToLower(turnInID))
+			isGiver := strings.EqualFold(string(npc.ID), q.Giver) || strings.EqualFold(string(npc.PrototypeID), q.Giver) || npc.HasKeyword(strings.ToLower(q.Giver))
+
+			if isTurnIn && quest.IsActive(c.Actor, q) && quest.IsReady(c.Actor, c.World, q) {
+				c.Print("[Quest Ready for Turn-in: %s] (Type: quest complete %s)", q.Title, q.ID)
+				hasQuestOffers = true
+			} else if isGiver && quest.IsAvailable(c.Actor, q, c.Pack.Quests) {
+				c.Print("[Quest Available: %s] (Type: quest accept %s)", q.Title, q.ID)
+				hasQuestOffers = true
+			}
+		}
+	}
 	if len(npc.Topics) == 0 {
-		c.Print("%s has nothing particular to say. Try ask %s about <topic> if you learn a word.", npc.CapDisplay(), firstWord(npc.Name))
+		if !hasQuestOffers {
+			c.Print("%s has nothing particular to say. Try ask %s about <topic> if you learn a word.", npc.CapDisplay(), firstWord(npc.Name))
+		}
 		return
 	}
 	keys := make([]string, 0, len(npc.Topics))
@@ -1053,14 +1191,21 @@ func listShop(c *Context, p Parsed) {
 		return
 	}
 	goods := c.World.Children(npc.ID)
+	cur := shopCurrency(c, npc)
 	if len(goods) == 0 {
 		c.Print("%s has nothing for sale.", npc.CapDisplay())
+		if purse, finite := economy.VendorPurse(npc); finite {
+			c.Print("%s has %d %s in the till.", npc.CapDisplay(), purse, c.Pack.Lexicon.Label(cur))
+		}
+		c.Print("Your %s: %d", c.Pack.Lexicon.Label(cur), c.Actor.Res(cur).Current)
 		return
 	}
-	cur := shopCurrency(npc)
 	c.Print("%s offers:", npc.CapDisplay())
 	for _, it := range goods {
 		c.Print("  %s  (%d %s)", it.Display(), shopPrice(npc, it), c.Pack.Lexicon.Label(cur))
+	}
+	if purse, finite := economy.VendorPurse(npc); finite {
+		c.Print("%s has %d %s in the till.", npc.CapDisplay(), purse, c.Pack.Lexicon.Label(cur))
 	}
 	c.Print("Your %s: %d", c.Pack.Lexicon.Label(cur), c.Actor.Res(cur).Current)
 }
@@ -1097,7 +1242,7 @@ func buy(c *Context, p Parsed) {
 		c.Print("%s doesn't have a %q.", npc.CapDisplay(), what)
 		return
 	}
-	cur := shopCurrency(npc)
+	cur := shopCurrency(c, npc)
 	price := shopPrice(npc, item)
 	if c.Actor.Res(cur).Current < price {
 		c.Print("You can't afford that (%d %s).", price, c.Pack.Lexicon.Label(cur))
@@ -1109,6 +1254,7 @@ func buy(c *Context, p Parsed) {
 		c.Print("%s", err.Error())
 		return
 	}
+	economy.VendorReceive(npc, price)
 	c.Print("You buy %s for %d %s.", item.Display(), price, c.Pack.Lexicon.Label(cur))
 }
 
@@ -1131,19 +1277,34 @@ func sell(c *Context, p Parsed) {
 		c.Print("%s", err.Error())
 		return
 	}
-	cur := shopCurrency(npc)
-	price := item.Value
+	cur := shopCurrency(c, npc)
+	price := economy.SellPrice(item)
+	label := c.Pack.Lexicon.Label(cur)
 	if price < 1 {
 		c.Print("%s isn't interested in %s.", npc.CapDisplay(), item.Display())
 		return
 	}
+	before := c.Actor.Res(cur).Current
+	c.Actor.AdjustRes(cur, price)
+	gained := c.Actor.Res(cur).Current - before
+	if gained < 1 {
+		c.Print("You can't hold any more %s.", label)
+		return
+	}
+	if !economy.CanVendorAfford(npc, gained) {
+		c.Actor.AdjustRes(cur, -gained)
+		purse, _ := economy.VendorPurse(npc)
+		c.Print("%s only has %d %s and cannot afford %s.", npc.CapDisplay(), purse, label, item.Display())
+		return
+	}
 	unequipIfWorn(c, item)
 	if err := c.World.Move(item.ID, npc.ID); err != nil {
+		c.Actor.AdjustRes(cur, -gained)
 		c.Print("%s", err.Error())
 		return
 	}
-	c.Actor.AdjustRes(cur, price)
-	c.Print("You sell %s for %d %s.", item.Display(), price, c.Pack.Lexicon.Label(cur))
+	economy.VendorPay(npc, gained)
+	c.Print("You sell %s for %d %s.", item.Display(), gained, label)
 }
 
 func shopkeep(c *Context, token string) (*world.Entity, error) {
@@ -1173,22 +1334,20 @@ func shopkeep(c *Context, token string) (*world.Entity, error) {
 	return found, nil
 }
 
-func shopCurrency(npc *world.Entity) string {
-	if npc.Shop != nil && npc.Shop.Currency != "" {
+func shopCurrency(c *Context, npc *world.Entity) string {
+	if npc != nil && npc.Shop != nil && npc.Shop.Currency != "" {
 		return npc.Shop.Currency
 	}
-	return "gold"
+	if c != nil && c.Pack != nil {
+		if cur := c.Pack.RPG.Advancement.Purse(); cur != "" {
+			return cur
+		}
+	}
+	return "coin"
 }
 
 func shopPrice(npc, item *world.Entity) int {
-	n := item.Value
-	if n < 1 {
-		n = 1
-	}
-	if npc.Shop != nil && npc.Shop.Markup > 0 {
-		n += n * npc.Shop.Markup / 100
-	}
-	return n
+	return economy.BuyPrice(npc, item)
 }
 
 func ask(c *Context, p Parsed) {
@@ -1213,16 +1372,57 @@ func ask(c *Context, p Parsed) {
 	if handled {
 		return
 	}
+	teachIfAny := func(matchedTopic string) {
+		if npc.TeachRecipes == nil {
+			return
+		}
+		for k, recID := range npc.TeachRecipes {
+			if strings.EqualFold(matchedTopic, k) || strings.EqualFold(topic, k) {
+				if c.Actor.LearnRecipe(recID) {
+					recName := recID
+					if c.Pack != nil {
+						for _, r := range c.Pack.Recipes {
+							if strings.EqualFold(r.ID, recID) {
+								recName = r.Name
+								break
+							}
+						}
+					}
+					c.Print("You learned how to craft %s!", recName)
+				}
+			}
+		}
+	}
+	checkQuestTalk := func(matchedTopic string) {
+		if c.Pack != nil && len(c.Pack.Quests) > 0 {
+			notices := quest.UpdateTalk(c.Actor, npc, matchedTopic, c.Pack.Quests, c.World)
+			for _, n := range notices {
+				c.Alert("%s", n.String())
+			}
+		}
+	}
 	if npc.Topics != nil {
 		if resp, ok := npc.Topics[strings.ToLower(topic)]; ok {
 			c.Say("%s says, \"%s\"", npc.CapDisplay(), resp)
+			teachIfAny(topic)
+			checkQuestTalk(topic)
 			return
 		}
 		for k, resp := range npc.Topics {
 			if strings.Contains(strings.ToLower(topic), k) || strings.Contains(k, strings.ToLower(topic)) {
 				c.Say("%s says, \"%s\"", npc.CapDisplay(), resp)
+				checkQuestTalk(k)
 				return
 			}
+		}
+	}
+	if c.Pack != nil && len(c.Pack.Quests) > 0 {
+		notices := quest.UpdateTalk(c.Actor, npc, topic, c.Pack.Quests, c.World)
+		if len(notices) > 0 {
+			for _, n := range notices {
+				c.Alert("%s", n.String())
+			}
+			return
 		}
 	}
 	c.Print("%s doesn't know about that.", npc.CapDisplay())
@@ -1358,4 +1558,1194 @@ func weatherCmd(c *Context, _ Parsed) {
 	}
 	st := c.Env.CurrentState()
 	c.Print("%s (%s)", desc, st.Label)
+}
+
+func repairCmd(c *Context, p Parsed) {
+	if strings.Contains(strings.ToLower(p.Rest), " with ") {
+		parts := strings.SplitN(p.Rest, " with ", 2)
+		itemStr := strings.TrimSpace(parts[0])
+		kitStr := strings.TrimSpace(parts[1])
+		it, err := resolve(c, itemStr, world.ScopeInventory, world.ScopeEquipment)
+		if err != nil {
+			c.Print("%s", err.Error())
+			return
+		}
+		kit, err := resolve(c, kitStr, world.ScopeInventory)
+		if err != nil {
+			c.Print("%s", err.Error())
+			return
+		}
+		if kit.RepairKit == nil {
+			c.Print("%s is not a repair kit.", kit.Display())
+			return
+		}
+		repairWithKit(c, it, kit)
+		return
+	}
+
+	repairer := repairerHere(c)
+	if repairer == nil {
+		if p.Rest != "" {
+			kit := findKitInInventory(c)
+			if kit != nil {
+				it, err := resolve(c, p.Rest, world.ScopeInventory, world.ScopeEquipment)
+				if err == nil {
+					repairWithKit(c, it, kit)
+					return
+				}
+			}
+		}
+		c.Print("No one here can repair your gear.")
+		return
+	}
+	cur := shopCurrency(c, repairer)
+
+	carried := c.World.Children(c.Actor.ID)
+	var damaged []*world.Entity
+	seen := map[world.ID]bool{}
+	checkDamaged := func(it *world.Entity) {
+		if it != nil && it.MaxDurability > 0 && it.Durability < it.MaxDurability && it.Repairable && !seen[it.ID] {
+			damaged = append(damaged, it)
+			seen[it.ID] = true
+		}
+	}
+	for _, it := range carried {
+		checkDamaged(it)
+	}
+	if c.Actor.Equipment != nil {
+		for _, id := range c.Actor.Equipment {
+			checkDamaged(c.World.Get(id))
+		}
+	}
+
+	target := strings.TrimSpace(p.Rest)
+	if target == "" {
+		if len(damaged) == 0 {
+			c.Print("All of your equipment is in pristine condition.")
+			return
+		}
+		c.Print("%s can repair:", repairer.CapDisplay())
+		total := 0
+		for _, it := range damaged {
+			cost := economy.RepairCost(it)
+			total += cost
+			c.Print("  %s %s — %d %s", it.Display(), economy.DurabilityTag(it), cost, c.Pack.Lexicon.Label(cur))
+		}
+		c.Print("Total repair cost: %d %s (You have: %d). Type 'repair all' or 'repair <item>' to fix.", total, c.Pack.Lexicon.Label(cur), c.Actor.Res(cur).Current)
+		return
+	}
+
+	if strings.EqualFold(target, "all") {
+		if len(damaged) == 0 {
+			c.Print("All of your equipment is in pristine condition.")
+			return
+		}
+		repaired := 0
+		totalSpent := 0
+		var skipped []string
+		for _, it := range damaged {
+			cost := economy.RepairCost(it)
+			if c.Actor.Res(cur).Current < cost {
+				skipped = append(skipped, it.Display())
+				continue
+			}
+			c.Actor.AdjustRes(cur, -cost)
+			economy.VendorReceive(repairer, cost)
+			economy.Repair(it)
+			totalSpent += cost
+			repaired++
+		}
+		if repaired == 0 {
+			c.Print("You can't afford to repair any of your equipment.")
+			return
+		}
+		c.Print("%s repairs %d item(s) for a total of %d %s.", repairer.CapDisplay(), repaired, totalSpent, c.Pack.Lexicon.Label(cur))
+		if len(skipped) > 0 {
+			c.Print("Still needs repair: %s (not enough %s).", strings.Join(skipped, ", "), c.Pack.Lexicon.Label(cur))
+		}
+		return
+	}
+
+	it, err := resolve(c, target, world.ScopeInventory, world.ScopeEquipment)
+	if err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+	if it.MaxDurability <= 0 || !it.Repairable {
+		c.Print("%s cannot be repaired.", it.Display())
+		return
+	}
+	if it.Durability >= it.MaxDurability && !it.HasFlag("broken") {
+		c.Print("%s is already in pristine condition.", it.Display())
+		return
+	}
+	cost := economy.RepairCost(it)
+	if c.Actor.Res(cur).Current < cost {
+		c.Print("You need %d %s to repair %s.", cost, c.Pack.Lexicon.Label(cur), it.Display())
+		return
+	}
+	c.Actor.AdjustRes(cur, -cost)
+	economy.VendorReceive(repairer, cost)
+	economy.Repair(it)
+	c.Print("%s repairs %s back to pristine condition for %d %s.", repairer.CapDisplay(), it.Display(), cost, c.Pack.Lexicon.Label(cur))
+}
+
+func repairerHere(c *Context) *world.Entity {
+	room := c.World.RoomOf(c.Actor)
+	if room == nil {
+		return nil
+	}
+	for _, e := range c.World.Children(room.ID) {
+		if e.Repairer || e.HasFlag("repairer") || e.HasFlag("blacksmith") {
+			return e
+		}
+	}
+	return nil
+}
+
+func recipesCmd(c *Context, _ Parsed) {
+	if c.Pack == nil || len(c.Pack.Recipes) == 0 {
+		c.Print("You don't know any crafting recipes.")
+		return
+	}
+	var known []economy.Recipe
+	for _, r := range c.Pack.Recipes {
+		if r.IsKnown(c.Actor) {
+			known = append(known, r)
+		}
+	}
+	if len(known) == 0 {
+		c.Print("You haven't discovered or learned any crafting recipes yet.")
+		return
+	}
+	c.Print("Crafting Recipes:")
+	room := c.World.RoomOf(c.Actor)
+	for _, r := range known {
+		var reqs []string
+		for _, req := range r.Requires {
+			n := req.Count
+			if n <= 0 {
+				n = 1
+			}
+			reqs = append(reqs, fmt.Sprintf("%d %s", n, req.Item))
+		}
+		var notes []string
+		if r.Station != "" {
+			if _, ok := economy.CheckStation(c.World, room, r.Station); ok {
+				notes = append(notes, r.Station+" here")
+			} else {
+				notes = append(notes, "need "+r.Station)
+			}
+		}
+		if len(r.Tools) > 0 {
+			if missing, ok := economy.CheckTools(c.World, c.Actor, r.Tools); ok {
+				notes = append(notes, "tools here")
+			} else {
+				notes = append(notes, "need "+missing)
+			}
+		}
+		if _, err := economy.FindIngredients(c.World, c.Actor, r.Requires); err == nil {
+			notes = append(notes, "materials here")
+		} else {
+			notes = append(notes, "missing materials")
+		}
+		c.Print("  %s — %s [%s]", r.Name, strings.Join(reqs, ", "), strings.Join(notes, ", "))
+	}
+}
+
+func matchRecipes(recipes []economy.Recipe, what string) []*economy.Recipe {
+	what = strings.TrimSpace(what)
+	low := strings.ToLower(what)
+	if low == "" {
+		return nil
+	}
+	var exact, words []*economy.Recipe
+	for i := range recipes {
+		r := &recipes[i]
+		name := strings.ToLower(r.Name)
+		id := strings.ToLower(strings.ReplaceAll(r.ID, "_", " "))
+		if strings.EqualFold(r.Name, what) || strings.EqualFold(r.ID, what) {
+			exact = append(exact, r)
+			continue
+		}
+		if hasWord(name, low) || hasWord(id, low) {
+			words = append(words, r)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return words
+}
+
+func hasWord(name, word string) bool {
+	for _, f := range strings.Fields(name) {
+		if f == word {
+			return true
+		}
+	}
+	return false
+}
+
+func craftCmd(c *Context, p Parsed) {
+	if c.Pack == nil || len(c.Pack.Recipes) == 0 {
+		c.Print("You don't know any crafting recipes.")
+		return
+	}
+	what := strings.TrimSpace(p.Rest)
+	if what == "" {
+		c.Print("Craft what? Type 'recipes' to see known blueprints.")
+		return
+	}
+	var known []*economy.Recipe
+	for _, r := range matchRecipes(c.Pack.Recipes, what) {
+		if r.IsKnown(c.Actor) {
+			known = append(known, r)
+		}
+	}
+	if len(known) == 0 {
+		c.Print("You don't know how to craft %q.", what)
+		return
+	}
+	if len(known) > 1 {
+		names := make([]string, 0, len(known))
+		for _, r := range known {
+			names = append(names, r.Name)
+		}
+		c.Print("Which one? %s.", strings.Join(names, ", "))
+		return
+	}
+	crafted, err := economy.Craft(c.World, c.Actor, *known[0], c.RNG, &c.Pack.RPG)
+	if err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+	if crafted.HasFlag("superior") {
+		c.Print("Your superior craftsmanship produces %s of exceptional quality!", crafted.Display())
+	} else {
+		c.Print("You craft %s.", crafted.Display())
+	}
+}
+
+func bankerHere(c *Context) *world.Entity {
+	room := c.World.RoomOf(c.Actor)
+	if room == nil {
+		return nil
+	}
+	if room.Banker || room.HasFlag("bank") || room.HasFlag("banker") {
+		return room
+	}
+	for _, e := range c.World.Children(room.ID) {
+		if e.Banker || e.HasFlag("bank") || e.HasFlag("banker") || e.HasKeyword("banker") || e.HasKeyword("vault") || e.HasKeyword("strongbox") {
+			return e
+		}
+	}
+	return nil
+}
+
+func bankCurrency(c *Context, banker *world.Entity) string {
+	if banker != nil && banker.Shop != nil && banker.Shop.Currency != "" {
+		return banker.Shop.Currency
+	}
+	if c.Pack != nil && c.Pack.RPG.Advancement.Currency != "" {
+		return c.Pack.RPG.Advancement.Currency
+	}
+	if c.Actor != nil && c.Actor.Resources != nil {
+		for _, key := range []string{"coin", "gold", "copper", "silver", "credits"} {
+			if _, ok := c.Actor.Resources[key]; ok {
+				return key
+			}
+		}
+		for k, r := range c.Actor.Resources {
+			if r.Pile {
+				return k
+			}
+		}
+	}
+	return "coin"
+}
+
+func resourceLabel(c *Context, key string) string {
+	if c.Pack == nil {
+		return key
+	}
+	return c.Pack.Lexicon.Label(key)
+}
+
+func isPurse(c *Context, key string) bool {
+	if c.Pack == nil {
+		return strings.EqualFold(key, "coin")
+	}
+	return strings.EqualFold(key, c.Pack.RPG.Advancement.Purse())
+}
+
+func canBank(c *Context, key string, allowStored bool) bool {
+	if c.Actor == nil {
+		return false
+	}
+	if r, ok := c.Actor.Resources[key]; ok && (r.Pile || isPurse(c, key)) {
+		return true
+	}
+	if isPurse(c, key) {
+		return true
+	}
+	return allowStored && c.Actor.BankBalance(key) > 0
+}
+
+func matchBankKey(c *Context, token string, allowStored bool) (string, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" || c.Actor == nil {
+		return "", false
+	}
+	named := func(key string) bool {
+		return strings.EqualFold(key, token) || strings.EqualFold(resourceLabel(c, key), token)
+	}
+	if c.Actor.Resources != nil {
+		for k, r := range c.Actor.Resources {
+			if !r.Pile && !isPurse(c, k) {
+				continue
+			}
+			if named(k) {
+				return k, true
+			}
+		}
+	}
+	if allowStored && c.Actor.Bank != nil {
+		for k, n := range c.Actor.Bank {
+			if n <= 0 || !named(k) {
+				continue
+			}
+			return k, true
+		}
+	}
+	return "", false
+}
+
+func depositCmd(c *Context, p Parsed) {
+	banker := bankerHere(c)
+	if banker == nil {
+		c.Print("There is no bank or vault here to conduct business.")
+		return
+	}
+	cur := bankCurrency(c, banker)
+	label := c.Pack.Lexicon.Label(cur)
+
+	target := strings.TrimSpace(p.Rest)
+	if target == "" {
+		c.Print("Deposit how much %s?", label)
+		return
+	}
+
+	fields := strings.Fields(target)
+	all := strings.EqualFold(fields[0], "all")
+	amount := 0
+	if all {
+		if len(fields) > 1 {
+			k, ok := matchBankKey(c, fields[1], false)
+			if !ok {
+				c.Print("The vault only holds loose piles.")
+				return
+			}
+			cur = k
+		}
+	} else {
+		n, err := strconv.Atoi(fields[0])
+		if err != nil || n <= 0 {
+			c.Print("Deposit how much %s?", label)
+			return
+		}
+		amount = n
+		if len(fields) > 1 {
+			k, ok := matchBankKey(c, fields[1], false)
+			if !ok {
+				c.Print("The vault only holds loose piles.")
+				return
+			}
+			cur = k
+		}
+	}
+	if !canBank(c, cur, false) {
+		c.Print("The vault only holds loose piles.")
+		return
+	}
+	label = resourceLabel(c, cur)
+	if all {
+		amount = c.Actor.Res(cur).Current
+	}
+
+	if amount <= 0 {
+		c.Print("You don't have any %s to deposit.", label)
+		return
+	}
+	have := c.Actor.Res(cur).Current
+	if have < amount {
+		c.Print("You only have %d %s (cannot deposit %d).", have, label, amount)
+		return
+	}
+
+	c.Actor.AdjustRes(cur, -amount)
+	bal := c.Actor.AdjustBank(cur, amount)
+	c.Print("You deposit %d %s into your vault (vault balance: %d %s).", amount, label, bal, label)
+}
+
+func withdrawCmd(c *Context, p Parsed) {
+	banker := bankerHere(c)
+	if banker == nil {
+		c.Print("There is no bank or vault here to conduct business.")
+		return
+	}
+	cur := bankCurrency(c, banker)
+	label := c.Pack.Lexicon.Label(cur)
+
+	target := strings.TrimSpace(p.Rest)
+	if target == "" {
+		c.Print("Withdraw how much %s?", label)
+		return
+	}
+
+	fields := strings.Fields(target)
+	all := strings.EqualFold(fields[0], "all")
+	amount := 0
+	if all {
+		if len(fields) > 1 {
+			k, ok := matchBankKey(c, fields[1], true)
+			if !ok {
+				c.Print("The vault only holds loose piles.")
+				return
+			}
+			cur = k
+		}
+	} else {
+		n, err := strconv.Atoi(fields[0])
+		if err != nil || n <= 0 {
+			c.Print("Withdraw how much %s?", label)
+			return
+		}
+		amount = n
+		if len(fields) > 1 {
+			k, ok := matchBankKey(c, fields[1], true)
+			if !ok {
+				c.Print("The vault only holds loose piles.")
+				return
+			}
+			cur = k
+		}
+	}
+	if !canBank(c, cur, true) {
+		c.Print("The vault only holds loose piles.")
+		return
+	}
+	label = resourceLabel(c, cur)
+	if all {
+		amount = c.Actor.BankBalance(cur)
+	}
+
+	if amount <= 0 {
+		c.Print("You don't have any %s in your vault to withdraw.", label)
+		return
+	}
+	inBank := c.Actor.BankBalance(cur)
+	if inBank < amount {
+		c.Print("You only have %d %s in your vault (cannot withdraw %d).", inBank, label, amount)
+		return
+	}
+
+	before := c.Actor.Res(cur).Current
+	c.Actor.AdjustBank(cur, -amount)
+	after := c.Actor.AdjustRes(cur, amount)
+	gained := after - before
+	if gained < amount {
+		c.Actor.AdjustBank(cur, amount-gained)
+	}
+	bal := c.Actor.BankBalance(cur)
+	if gained < 1 {
+		c.Print("You can't hold any more %s.", label)
+		return
+	}
+	c.Print("You withdraw %d %s from your vault (vault balance: %d %s).", gained, label, bal, label)
+}
+
+func balanceCmd(c *Context, _ Parsed) {
+	banker := bankerHere(c)
+	if banker == nil {
+		c.Print("There is no bank or vault here to conduct business.")
+		return
+	}
+	if len(c.Actor.Bank) == 0 {
+		c.Print("Your vault account is currently empty.")
+		return
+	}
+	total := 0
+	var lines []string
+	for cur, amt := range c.Actor.Bank {
+		if amt > 0 {
+			lines = append(lines, fmt.Sprintf("  %d %s", amt, c.Pack.Lexicon.Label(cur)))
+			total += amt
+		}
+	}
+	if len(lines) == 0 {
+		c.Print("Your vault account is currently empty.")
+		return
+	}
+	c.Print("Vault Account Balance:")
+	for _, l := range lines {
+		c.Print("%s", l)
+	}
+}
+
+func gatherCmd(c *Context, p Parsed) {
+	room := c.World.RoomOf(c.Actor)
+	if room == nil {
+		c.Print("You are nowhere.")
+		return
+	}
+	var nodeEnt *world.Entity
+	if p.Rest != "" {
+		e, err := resolve(c, p.Rest, world.ScopeRoom)
+		if err == nil && e.Gather != nil {
+			nodeEnt = e
+		}
+	}
+	if nodeEnt == nil {
+		for _, e := range c.World.Children(room.ID) {
+			if e.Gather != nil {
+				nodeEnt = e
+				break
+			}
+		}
+	}
+	if nodeEnt == nil && room.Gather != nil {
+		nodeEnt = room
+	}
+	if nodeEnt == nil || nodeEnt.Gather == nil {
+		c.Print("There is nothing here to gather or forage.")
+		return
+	}
+
+	node := nodeEnt.Gather
+	if node.Remaining <= 0 {
+		msg := node.DepletedMsg
+		if msg == "" {
+			msg = fmt.Sprintf("The %s has been picked clean for now. Check back later.", nodeEnt.Display())
+		}
+		c.Print("%s", msg)
+		return
+	}
+
+	skill := node.Skill
+	if skill == "" {
+		skill = "notice"
+	}
+	diff := node.Difficulty
+
+	var res rpg.Result
+	var ok bool
+	if c.Pack != nil && len(c.Pack.RPG.Checks) > 0 {
+		res, ok = c.Pack.RPG.Resolve(c.RNG, c.World, c.Actor, skill, diff, diff > 0)
+	}
+
+	if ok && !res.Success {
+		c.Print("You search carefully around %s, but find nothing usable.", nodeEnt.Display())
+		return
+	}
+
+	protoID := world.ID(node.Resource)
+	if c.World.Protos[protoID] == nil {
+		c.Print("You couldn't gather anything: there is no pattern for %s.", node.Resource)
+		return
+	}
+
+	node.Remaining--
+	first, err := c.World.Spawn(protoID, c.Actor.ID)
+	if err != nil {
+		node.Remaining++
+		c.Print("You couldn't gather anything: %s", err.Error())
+		return
+	}
+
+	itemName := first.Display()
+	bonus := false
+	if ok && node.BonusDC > 0 && res.Total >= node.BonusDC {
+		if _, err := c.World.Spawn(protoID, c.Actor.ID); err == nil {
+			bonus = true
+		}
+	}
+
+	if bonus {
+		c.Print("You gather %s from %s. Your keen perception spots an extra piece!", itemName, nodeEnt.Display())
+	} else {
+		c.Print("You gather %s from %s.", itemName, nodeEnt.Display())
+	}
+}
+
+func questsCmd(c *Context, p Parsed) {
+	if c.Pack == nil || len(c.Pack.Quests) == 0 {
+		c.Print("There are no quests in this world.")
+		return
+	}
+	if p.Rest != "" {
+		q := pickQuest(c, p.Rest)
+		if q == nil {
+			return
+		}
+		showQuestDetails(c, q)
+		return
+	}
+
+	var active, completed []quest.Quest
+	for _, q := range c.Pack.Quests {
+		if quest.IsActive(c.Actor, q) {
+			active = append(active, q)
+		} else if quest.IsCompleted(c.Actor, q) {
+			completed = append(completed, q)
+		}
+	}
+
+	if len(active) == 0 && len(completed) == 0 {
+		c.Print("You have no active or completed quests.")
+		c.Print("Talk to people in the world to find quests.")
+		return
+	}
+
+	if len(active) > 0 {
+		c.Print("Active Quests:")
+		for _, q := range active {
+			statusTag := ""
+			if quest.IsReady(c.Actor, c.World, q) {
+				statusTag = " [Ready for Turn-in!]"
+			}
+			c.Print("  %s (%s)%s", q.Title, q.ID, statusTag)
+			for _, obj := range q.Objectives {
+				cur, need, done := quest.ObjectiveProgress(c.Actor, c.World, q, obj)
+				mark := ""
+				if done {
+					mark = " [Done]"
+				}
+				c.Print("    - %s (%d/%d)%s", obj.Desc, cur, need, mark)
+			}
+		}
+	}
+
+	if len(completed) > 0 {
+		if len(active) > 0 {
+			c.Print("%s", "")
+		}
+		c.Print("Completed Quests:")
+		for _, q := range completed {
+			c.Print("  - %s (%s)", q.Title, q.ID)
+		}
+	}
+}
+
+func showQuestDetails(c *Context, q *quest.Quest) {
+	c.Print("%s (%s)", q.Title, q.ID)
+	if q.Desc != "" {
+		c.Print("  %s", q.Desc)
+	}
+	c.Print("Objectives:")
+	for _, obj := range q.Objectives {
+		cur, need, done := quest.ObjectiveProgress(c.Actor, c.World, *q, obj)
+		mark := ""
+		if done {
+			mark = " [Done]"
+		}
+		c.Print("  - %s (%d/%d)%s", obj.Desc, cur, need, mark)
+	}
+	var rewParts []string
+	if q.Rewards.XP > 0 {
+		rewParts = append(rewParts, fmt.Sprintf("%d XP", q.Rewards.XP))
+	}
+	if q.Rewards.Amount > 0 {
+		curName := q.Rewards.Currency
+		if curName == "" {
+			curName = "coin"
+		}
+		rewParts = append(rewParts, fmt.Sprintf("%d %s", q.Rewards.Amount, c.Pack.Lexicon.Label(curName)))
+	}
+	for _, it := range q.Rewards.Items {
+		itemProto := c.World.Protos[world.ID(it)]
+		name := it
+		if itemProto != nil {
+			name = itemProto.Display()
+		}
+		rewParts = append(rewParts, name)
+	}
+	for _, rec := range q.Rewards.Recipes {
+		recName := rec
+		for _, r := range c.Pack.Recipes {
+			if strings.EqualFold(r.ID, rec) {
+				recName = r.Name
+				break
+			}
+		}
+		rewParts = append(rewParts, fmt.Sprintf("%s recipe", recName))
+	}
+	if len(rewParts) > 0 {
+		c.Print("Rewards: %s", strings.Join(rewParts, ", "))
+	}
+	if quest.IsCompleted(c.Actor, *q) {
+		c.Print("Status: Completed")
+	} else if quest.IsActive(c.Actor, *q) {
+		if quest.IsReady(c.Actor, c.World, *q) {
+			c.Print("Status: Ready to Turn-in (Type: quest complete %s)", q.ID)
+		} else {
+			c.Print("Status: Active")
+		}
+	} else if quest.IsAvailable(c.Actor, *q, c.Pack.Quests) {
+		c.Print("Status: Available (Type: quest accept %s)", q.ID)
+	} else {
+		c.Print("Status: Locked")
+	}
+}
+
+func questCmd(c *Context, p Parsed) {
+	if c.Pack == nil || len(c.Pack.Quests) == 0 {
+		c.Print("There are no quests in this world.")
+		return
+	}
+	if len(p.Args) == 0 {
+		questsCmd(c, p)
+		return
+	}
+
+	sub := strings.ToLower(p.Args[0])
+	switch sub {
+	case "accept", "take", "start":
+		if len(p.Args) < 2 {
+			c.Print("Accept which quest? Type: quest accept <id|name>")
+			return
+		}
+		target := strings.TrimSpace(p.Rest[len(p.Args[0]):])
+		q := pickQuest(c, target)
+		if q == nil {
+			return
+		}
+		if quest.IsActive(c.Actor, *q) {
+			c.Print("You are already on '%s'.", q.Title)
+			return
+		}
+		if quest.IsCompleted(c.Actor, *q) {
+			c.Print("You have already completed '%s'.", q.Title)
+			return
+		}
+		if !quest.IsAvailable(c.Actor, *q, c.Pack.Quests) {
+			c.Print("You do not meet the requirements to start '%s'.", q.Title)
+			return
+		}
+		if q.Giver != "" {
+			giver := npcInRoom(c, q.Giver)
+			if giver == nil {
+				c.Print("The quest giver is not here.")
+				return
+			}
+		}
+		if quest.Start(c.Actor, *q) {
+			c.Print("You accepted quest: %s.", q.Title)
+			if q.Desc != "" {
+				c.Print("%s", q.Desc)
+			}
+			room := c.World.RoomOf(c.Actor)
+			if room != nil {
+				notices := quest.UpdateVisit(c.Actor, room.ID, []quest.Quest{*q}, c.World)
+				for _, n := range notices {
+					c.Alert("%s", n.String())
+				}
+			}
+		}
+	case "complete", "finish", "turnin", "turn-in":
+		if len(p.Args) < 2 {
+			c.Print("Complete which quest? Type: quest complete <id|name>")
+			return
+		}
+		target := strings.TrimSpace(p.Rest[len(p.Args[0]):])
+		q := pickQuest(c, target)
+		if q == nil {
+			return
+		}
+		if !quest.IsActive(c.Actor, *q) {
+			if quest.IsCompleted(c.Actor, *q) {
+				c.Print("You have already completed '%s'.", q.Title)
+			} else {
+				c.Print("You are not on that quest.")
+			}
+			return
+		}
+		turnInID := q.TurnIn
+		if turnInID == "" {
+			turnInID = q.Giver
+		}
+		if turnInID != "" {
+			turnInNPC := npcInRoom(c, turnInID)
+			if turnInNPC == nil {
+				c.Print("The turn-in contact is not here.")
+				return
+			}
+		}
+		if !quest.IsReady(c.Actor, c.World, *q) {
+			c.Print("You haven't finished all the objectives for '%s' yet.", q.Title)
+			return
+		}
+		if err := quest.Complete(c.Actor, c.World, *q, c.Tick); err != nil {
+			c.Print("Cannot complete quest: %s", err.Error())
+			return
+		}
+		c.Print("Quest Completed: %s!", q.Title)
+		if q.Rewards.Message != "" {
+			c.Print("%s", q.Rewards.Message)
+		}
+		var rewardsList []string
+		if q.Rewards.XP > 0 {
+			rewardsList = append(rewardsList, fmt.Sprintf("%d XP", q.Rewards.XP))
+			if c.Pack.RPG.Advancement.On() {
+				msgs := c.Pack.RPG.Grant(c.Actor, q.Rewards.XP)
+				for _, msg := range msgs {
+					c.Alert("%s", msg)
+				}
+			} else {
+				c.Actor.XP += q.Rewards.XP
+			}
+		}
+		if q.Rewards.Amount > 0 {
+			cur := q.Rewards.Currency
+			if cur == "" {
+				cur = "coin"
+			}
+			rewardsList = append(rewardsList, fmt.Sprintf("%d %s", q.Rewards.Amount, c.Pack.Lexicon.Label(cur)))
+		}
+		for _, it := range q.Rewards.Items {
+			p := c.World.Protos[world.ID(it)]
+			name := it
+			if p != nil {
+				name = p.Display()
+			}
+			rewardsList = append(rewardsList, name)
+		}
+		for _, rec := range q.Rewards.Recipes {
+			recName := rec
+			for _, r := range c.Pack.Recipes {
+				if strings.EqualFold(r.ID, rec) {
+					recName = r.Name
+					break
+				}
+			}
+			rewardsList = append(rewardsList, fmt.Sprintf("%s recipe", recName))
+		}
+		if len(rewardsList) > 0 {
+			c.Print("Rewards: %s", strings.Join(rewardsList, ", "))
+		}
+		checkAutoStarts(c)
+	default:
+		matches := quest.MatchQuests(c.Pack.Quests, p.Rest)
+		switch len(matches) {
+		case 1:
+			showQuestDetails(c, matches[0])
+		default:
+			if len(matches) > 1 {
+				names := make([]string, 0, len(matches))
+				for _, q := range matches {
+					names = append(names, q.Title)
+				}
+				c.Print("Which quest? %s.", strings.Join(names, ", "))
+				return
+			}
+			c.Print("Unknown quest command: '%s'. Try 'quest accept <id>', 'quest complete <id>', or 'quests'.", sub)
+		}
+	}
+}
+
+func pickQuest(c *Context, query string) *quest.Quest {
+	matches := quest.MatchQuests(c.Pack.Quests, query)
+	switch len(matches) {
+	case 0:
+		c.Print("No such quest: %q.", strings.TrimSpace(query))
+		return nil
+	case 1:
+		return matches[0]
+	default:
+		names := make([]string, 0, len(matches))
+		for _, q := range matches {
+			names = append(names, q.Title)
+		}
+		c.Print("Which quest? %s.", strings.Join(names, ", "))
+		return nil
+	}
+}
+
+func checkAutoStarts(c *Context) {
+	if c == nil || c.Pack == nil || c.Actor == nil {
+		return
+	}
+	for _, q := range c.Pack.Quests {
+		if q.AutoStart && quest.IsAvailable(c.Actor, q, c.Pack.Quests) {
+			if quest.Start(c.Actor, q) {
+				c.Alert("[New Quest Started: %s]", q.Title)
+				if q.Desc != "" {
+					c.Print("%s", q.Desc)
+				}
+			}
+		}
+	}
+}
+
+func npcInRoom(c *Context, npcID string) *world.Entity {
+	if c == nil || c.Actor == nil || c.World == nil || npcID == "" {
+		return nil
+	}
+	room := c.World.RoomOf(c.Actor)
+	if room == nil {
+		return nil
+	}
+	for _, kid := range c.World.Children(room.ID) {
+		if kid.Kind != world.KindMobile && kid.Kind != world.KindPlayer {
+			continue
+		}
+		if strings.EqualFold(string(kid.ID), npcID) || strings.EqualFold(string(kid.PrototypeID), npcID) || kid.HasKeyword(strings.ToLower(npcID)) {
+			return kid
+		}
+	}
+	return nil
+}
+
+func isCorpse(e *world.Entity) bool {
+	if e == nil {
+		return false
+	}
+	id := string(e.ID)
+	return e.HasKeyword("corpse") || strings.HasPrefix(id, "corpse-") || strings.HasPrefix(id, "corpse#")
+}
+
+func findKitInInventory(c *Context) *world.Entity {
+	if c.Actor == nil || c.World == nil {
+		return nil
+	}
+	for _, id := range c.Actor.Contents {
+		it := c.World.Get(id)
+		if it != nil && it.RepairKit != nil && it.RepairKit.Uses > 0 {
+			return it
+		}
+	}
+	return nil
+}
+
+func repairWithKit(c *Context, it *world.Entity, kit *world.Entity) {
+	if it == nil || kit == nil {
+		return
+	}
+	if it.MaxDurability <= 0 || !it.Repairable {
+		c.Print("%s cannot be repaired.", it.Display())
+		return
+	}
+	if it.Durability >= it.MaxDurability && !it.HasFlag("broken") {
+		c.Print("%s is already in pristine condition.", it.Display())
+		return
+	}
+	if kit.RepairKit == nil || kit.RepairKit.Uses <= 0 {
+		c.Print("%s has no uses remaining.", kit.Display())
+		return
+	}
+
+	if kit.RepairKit.Skill != "" {
+		if c.Pack == nil {
+			c.Print("This repair needs a %s check, and this game has no such check.", kit.RepairKit.Skill)
+			return
+		}
+		dc := kit.RepairKit.DC
+		if dc <= 0 {
+			dc = 7
+		}
+		res, ok := c.Pack.RPG.Resolve(c.RNG, c.World, c.Actor, kit.RepairKit.Skill, dc, true)
+		if !ok {
+			c.Print("This repair needs a %s check, and this game has no such check.", kit.RepairKit.Skill)
+			return
+		}
+		if !res.Success {
+			kit.RepairKit.Uses--
+			c.Print("You struggle with %s and fail to mend %s properly. One use was wasted (%d left).", kit.Display(), it.Display(), kit.RepairKit.Uses)
+			if kit.RepairKit.Uses <= 0 {
+				c.Print("Your %s is used up.", kit.Display())
+				c.World.Destroy(kit.ID)
+			}
+			return
+		}
+	}
+
+	amount := kit.RepairKit.Amount
+	if amount <= 0 {
+		it.Durability = it.MaxDurability
+	} else {
+		it.Durability += amount
+		if it.Durability > it.MaxDurability {
+			it.Durability = it.MaxDurability
+		}
+	}
+	it.SetFlag("broken", false)
+	kit.RepairKit.Uses--
+	c.Print("You use %s to repair %s (%d/%d durability).", kit.Display(), it.Display(), it.Durability, it.MaxDurability)
+	if kit.RepairKit.Uses <= 0 {
+		c.Print("Your %s is used up.", kit.Display())
+		c.World.Destroy(kit.ID)
+	}
+}
+
+func skinCmd(c *Context, p Parsed) {
+	target := strings.TrimSpace(p.Rest)
+	var corpse *world.Entity
+	if target == "" || strings.EqualFold(target, "corpse") {
+		room := c.World.RoomOf(c.Actor)
+		if room != nil {
+			for _, kid := range c.World.Children(room.ID) {
+				if isCorpse(kid) {
+					corpse = kid
+					break
+				}
+			}
+		}
+		if corpse == nil {
+			for _, cid := range c.Actor.Contents {
+				it := c.World.Get(cid)
+				if isCorpse(it) {
+					corpse = it
+					break
+				}
+			}
+		}
+		if corpse == nil {
+			c.Print("There is no corpse here to skin.")
+			return
+		}
+	} else {
+		var err error
+		corpse, err = resolve(c, target, world.ScopeRoom, world.ScopeInventory)
+		if err != nil {
+			c.Print("%s", err.Error())
+			return
+		}
+	}
+
+	if !isCorpse(corpse) {
+		c.Print("You can only skin or butcher corpses.")
+		return
+	}
+	if corpse.HasFlag("skinned") {
+		c.Print("%s has already been butchered.", corpse.CapDisplay())
+		return
+	}
+
+	var skinLoot []world.LootDrop
+	for _, loot := range corpse.Loot {
+		if !loot.SkinOnly {
+			continue
+		}
+		if c.World.Protos[world.ID(loot.Item)] == nil {
+			c.Print("You can't harvest %s: there is no pattern for %s.", corpse.Display(), loot.Item)
+			return
+		}
+		skinLoot = append(skinLoot, loot)
+	}
+
+	corpse.SetFlag("skinned", true)
+	if !strings.Contains(corpse.Short, "(butchered)") && !strings.Contains(corpse.Short, "(skinned)") {
+		corpse.Short = corpse.Short + " (butchered)"
+	}
+
+	var harvested []string
+	if len(skinLoot) > 0 {
+		for _, loot := range skinLoot {
+			chance := loot.Chance
+			if chance <= 0 {
+				chance = 100
+			}
+			if c.RNG != nil && c.RNG.Intn(100) >= chance {
+				continue
+			}
+			count := loot.Count
+			if count <= 0 {
+				count = 1
+			}
+			for i := 0; i < count; i++ {
+				sp, err := c.World.Spawn(world.ID(loot.Item), c.Actor.ID)
+				if err == nil && sp != nil {
+					harvested = append(harvested, sp.Display())
+					if c.Pack != nil {
+						for _, q := range c.Pack.Quests {
+							if !quest.IsActive(c.Actor, q) {
+								continue
+							}
+							for _, obj := range q.Objectives {
+								if obj.Kind == quest.KindCollect {
+									match := strings.EqualFold(string(sp.PrototypeID), obj.Target) ||
+										sp.HasKeyword(strings.ToLower(obj.Target)) ||
+										strings.EqualFold(string(sp.ID), obj.Target)
+									if match {
+										cur, need, done := quest.ObjectiveProgress(c.Actor, c.World, q, obj)
+										if done && quest.IsReady(c.Actor, c.World, q) {
+											c.Alert("[Quest Ready for Turn-in: %s]", q.Title)
+										} else if done {
+											c.Alert("[Objective Complete: %s (%d/%d)]", obj.Desc, cur, need)
+										} else {
+											c.Alert("[Objective Progress: %s (%d/%d)]", obj.Desc, cur, need)
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if len(harvested) > 0 {
+		c.Print("You butcher %s and collect: %s.", corpse.Display(), strings.Join(harvested, ", "))
+	} else {
+		c.Print("You butcher %s, but find nothing usable.", corpse.Display())
+	}
+}
+
+func salvageCmd(c *Context, p Parsed) {
+	if p.Rest == "" {
+		c.Print("Salvage what? Type: salvage <item>")
+		return
+	}
+	it, err := resolve(c, p.Rest, world.ScopeInventory)
+	if err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+	if len(it.Salvage) == 0 {
+		c.Print("You can't salvage anything useful from %s.", it.Display())
+		return
+	}
+
+	for _, sy := range it.Salvage {
+		if c.World.Protos[world.ID(sy.Item)] == nil {
+			c.Print("You can't salvage %s: there is no pattern for %s.", it.Display(), sy.Item)
+			return
+		}
+	}
+
+	unequipIfWorn(c, it)
+	itName := it.Display()
+	salvageYields := append([]world.SalvageYield{}, it.Salvage...)
+	c.World.Destroy(it.ID)
+
+	var obtained []string
+	for _, sy := range salvageYields {
+		count := sy.Count
+		if count <= 0 {
+			count = 1
+		}
+		for i := 0; i < count; i++ {
+			sp, err := c.World.Spawn(world.ID(sy.Item), c.Actor.ID)
+			if err == nil && sp != nil {
+				obtained = append(obtained, sp.Display())
+			}
+		}
+	}
+
+	if len(obtained) > 0 {
+		c.Print("You carefully break down %s into: %s.", itName, strings.Join(obtained, ", "))
+	} else {
+		c.Print("You break down %s, but nothing was recovered.", itName)
+	}
 }

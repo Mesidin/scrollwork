@@ -35,24 +35,52 @@ Status Legend:
 
 ## 3. Economy, Crafting & Durability
 
-* [-] **Expanded Economy & Commerce**: *(See design spec: [`features/economy.md`](features/economy.md))*
-  * [ ] Dynamic merchant inventory & purses (finite vendor gold, stock depletion, supply/demand pricing).
-  * [ ] Item durability & equipment degradation during combat rounds.
-  * [ ] Repair mechanics via blacksmith NPCs or repair kits.
-  * [ ] Crafting system (gathering, refining, assembly via verbs or Lua recipes).
-  * [ ] Tangible currencies (coin encumbrance/weight, bank vaults, money changers).
+* [x] **Expanded Economy & Commerce**: *(See design spec: [`features/economy.md`](features/economy.md))*
+  * [x] Dynamic merchant inventory & purses (finite vendor gold till, dynamic refill on player purchases, affordability check on sell).
+  * [x] Item durability & equipment degradation during combat rounds (weapon and armor wear on a landed hit, broken states).
+  * [x] Repair mechanics via blacksmith NPCs (`repair`, `repair <item>`, `repair all`, durability discount on sale).
+  * [x] Crafting system (`recipes.yaml` schema, room crafting station checks, tool requirements, material consumption, `recipes` & `craft` verbs).
+  * [x] Recipe progression (discovery locks `discovered: false`, NPC topic teaching `teach_recipes`, item `use.learn_recipe`, Lua API `learn_recipe`).
+  * [x] Crafting skill integration (minimum skill requirement `min_skill`, crafting rolls, and superior craftsmanship quality bonuses).
+  * [x] Resource gathering (`gather` / `forage`, gathering nodes with capacity and regeneration, perception DC checks with bonus resource discoverability).
+  * [x] Banking & town vaults (`banker: true`, `deposit`, `withdraw`, `balance` preserved safely across character deaths).
+  * [x] Hunting & loot tables (`loot` schema, non-skin drops on death, `skin` / `butcher` corpse harvesting).
+  * [x] Salvage & deconstruction (`salvage` / `breakdown` items into components).
+  * [x] Field survival repair kits (`repair_kit` schema, `repair <item> with <kit>`, `use <kit> on <item>`).
+  * [x] Dynamic mob respawning (`respawn_every` tick heartbeat).
+  * [ ] Price curves, and discovery methods stored as `grant` / `buy` / `discover`. `disc` is only on or off. Superior craft is the durability bonus on a high roll.
 
 ---
 
-## 4. Content & Games
+## 4. Quests & Narrative Objectives
 
-* [ ] **Develop `game-3`**: Turn the blank scaffold into a complete mini-adventure or specialized demo.
-* [ ] **Expand `green-hollow`**: Add additional rooms, quest loops, deeper NPC conversations, and wilderness encounters.
-* [ ] **OLC Enhancements**: In-engine builders for shops, loot tables, and dialogue trees.
+* [x] **Quests, Dialogue & Objectives**:
+  * [x] Data-driven quest schema (`quests.yaml` / `world/quests.yaml`).
+  * [x] Objectives engine (`kill`, `collect` with item consumption, `visit`, `talk`).
+  * [x] Reward engine (XP, currency, item prototype grants, recipe unlocks).
+  * [x] Prerequisite quest chains (`requires_quest`).
+  * [x] Player commands (`quests` / `tasks` / `journal`, `quest <id>`, `quest accept`, `quest complete`).
+  * [x] Dialogue integration: NPC `talk` lists offered quests and ready turn-ins; `ask` triggers talk objectives.
+  * [x] Demonstrated with 3-quest progression line in `games/green-hollow`.
 
 ---
 
-## 5. Networking & Multiplayer (Long-Term)
+## 5. Content, Building & OLC Tools
+
+* [ ] **Develop `game-3`**: Reserved for user. Do not edit or touch.
+* [x] **Expand `green-hollow`**: Quests, trainer, combat, gathering, hunting, repair, and crafting loops added.
+* [x] **In-Engine OLC World Builder Tools**:
+  * [x] Shop & purse builders (`mset shop ...`).
+  * [x] Service NPC flags (`mset repairer`, `mset banker`, `mset trainer`).
+  * [x] Mobile loot table & respawn builders (`mset loot`, `mset respawn`).
+  * [x] Item salvage & repair kit builders (`iset salvage`, `iset kit`).
+  * [x] Gathering node builders (`gset` / `node`).
+  * [x] Crafting recipe builders (`recipe` / `rcset`).
+  * [x] Live prototype synchronization and `save pack` YAML round-trip persistence.
+
+---
+
+## 6. Networking & Multiplayer (Long-Term)
 
 * [ ] **Server Port Binding**: Bind `internal/server` protocol session handling to TCP / Telnet / SSH.
 * [ ] **Multiplayer Session Management**: Player connection lifecycle, room broadcasts, and multi-user chat channels.

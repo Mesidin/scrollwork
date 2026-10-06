@@ -1,0 +1,34 @@
+- id: craft_cudgel
+  name: carved cudgel
+  station: workbench
+  discovered: false
+  skill: crafting
+  min_skill: 1
+  difficulty: 7
+  requires:
+    - item: hollow.branch
+      count: 1
+  produces: hollow.club
+
+- id: craft_torch
+  name: pitch torch
+  station: workbench
+  discovered: true
+  requires:
+    - item: hollow.branch
+      count: 1
+    - item: hollow.strips
+      count: 1
+  produces: hollow.torch
+
+- id: craft_cloak
+  name: wool cloak
+  station: workbench
+  discovered: true
+  requires:
+    - item: hollow.pelt
+      count: 1
+    - item: hollow.strips
+      count: 1
+  produces: hollow.cloak
+

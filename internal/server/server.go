@@ -13,6 +13,7 @@ import (
 	"sudengine/internal/olc"
 	"sudengine/internal/pack"
 	"sudengine/internal/protocol"
+	"sudengine/internal/quest"
 	"sudengine/internal/render"
 	"sudengine/internal/save"
 	"sudengine/internal/script"
@@ -231,6 +232,7 @@ func (s *Server) ctx() *commands.Context {
 				return err
 			}
 			s.World = w
+			s.Pack.StampPiles(w)
 			s.Scripts.World = w
 			sess.PlayerID = w.PlayerID
 			if s.Env != nil {
@@ -346,10 +348,37 @@ func (s *Server) tick() {
 		s.Combat.Tick(s.World, now)
 	}
 	s.reapDead()
+	s.processRespawns()
 	// only push vitals/combat on tick to avoid flooding the log
 	s.pushVitals()
 	s.pushCombat()
 	s.pushPrompt()
+}
+
+func (s *Server) processRespawns() {
+	if s.World == nil || len(s.World.Respawns) == 0 {
+		return
+	}
+	now := s.World.Tick
+	remaining := s.World.Respawns[:0]
+	for _, task := range s.World.Respawns {
+		if now >= task.DueTick {
+			mob, err := s.World.Spawn(task.ProtoID, task.RoomID)
+			if err == nil && mob != nil {
+				mob.HomeRoom = task.RoomID
+				player := s.World.Player()
+				if player != nil && s.World.RoomOf(player) == s.World.Get(task.RoomID) {
+					s.Session.Send(protocol.TextEvent{
+						Channel: protocol.ChanNarrative,
+						Text:    fmt.Sprintf("%s appears.", mob.CapDisplay()),
+					})
+				}
+			}
+		} else {
+			remaining = append(remaining, task)
+		}
+	}
+	s.World.Respawns = remaining
 }
 
 func (s *Server) outdoorHitPenalty(att *world.Entity) int {
@@ -450,6 +479,13 @@ func (s *Server) regen() {
 			r := e.Res(def.Key)
 			if r.Current < r.Max {
 				e.AdjustRes(def.Key, def.Regen)
+			}
+		}
+	}
+	for _, e := range s.World.Entities {
+		if e.Gather != nil && e.Gather.Remaining < e.Gather.Max && e.Gather.RegenEvery > 0 {
+			if s.World.Tick%int64(e.Gather.RegenEvery) == 0 {
+				e.Gather.Remaining++
 			}
 		}
 	}
@@ -597,6 +633,13 @@ func (s *Server) pursue(e, room, player *world.Entity) {
 	}
 }
 
+// corpseID keeps the mob's dotted id out of the corpse id, so the last
+// path segment is not a living keyword such as "wolf".
+func corpseID(id world.ID) world.ID {
+	safe := strings.NewReplacer(".", "-", "#", "-").Replace(string(id))
+	return world.ID("corpse#" + safe)
+}
+
 func (s *Server) reapDead() {
 	primary := s.Pack.RPG.Primary()
 	player := s.World.Player()
@@ -616,6 +659,12 @@ func (s *Server) reapDead() {
 		}
 		room := s.World.RoomOf(e)
 		_, _ = s.Scripts.Call("on_death", player, e)
+		if player != nil && e.SlainBy == player.ID && s.Pack != nil && len(s.Pack.Quests) > 0 {
+			notices := quest.UpdateKill(player, e, s.Pack.Quests, s.World)
+			for _, n := range notices {
+				s.Session.Send(protocol.TextEvent{Channel: protocol.ChanAlert, Text: n.String()})
+			}
+		}
 		if player != nil && e.XP > 0 && s.Pack.RPG.Advancement.On() {
 			s.Session.Send(protocol.TextEvent{
 				Channel: protocol.ChanNarrative,
@@ -638,18 +687,62 @@ func (s *Server) reapDead() {
 					_ = s.World.Move(c, room.ID)
 				}
 			}
+			if len(e.Loot) > 0 {
+				for _, loot := range e.Loot {
+					if loot.SkinOnly {
+						continue
+					}
+					chance := loot.Chance
+					if chance <= 0 {
+						chance = 100
+					}
+					if s.rng == nil || s.rng.Intn(100) < chance {
+						count := loot.Count
+						if count <= 0 {
+							count = 1
+						}
+						for k := 0; k < count; k++ {
+							_, _ = s.World.Spawn(world.ID(loot.Item), room.ID)
+						}
+					}
+				}
+			}
 			if s.Pack.RPG.Death.NPCCorpse() {
+				var skinLoot []world.LootDrop
+				for _, loot := range e.Loot {
+					if loot.SkinOnly {
+						skinLoot = append(skinLoot, loot)
+					}
+				}
 				corpse := &world.Entity{
-					ID:       world.ID(fmt.Sprintf("corpse-%s", e.ID)),
+					ID:       corpseID(e.ID),
 					Kind:     world.KindItem,
-					Name:     "corpse of " + e.Name,
-					Short:    "the corpse of " + e.Display(),
-					Long:     "It's dead.",
+					Name:     "corpse",
+					Short:    "a corpse",
+					Long:     "The remains of " + e.Display() + ".",
 					Keywords: []string{"corpse"},
 					Takeable: true,
+					Loot:     skinLoot,
 				}
 				s.World.Add(corpse)
 				_ = s.World.Move(corpse.ID, room.ID)
+			}
+		}
+		if e.RespawnEvery > 0 {
+			home := e.HomeRoom
+			if home == "" && room != nil {
+				home = room.ID
+			}
+			if home != "" {
+				proto := e.PrototypeID
+				if proto == "" {
+					proto = e.ID
+				}
+				s.World.Respawns = append(s.World.Respawns, world.RespawnTask{
+					ProtoID: proto,
+					RoomID:  home,
+					DueTick: s.World.Tick + int64(e.RespawnEvery),
+				})
 			}
 		}
 		s.World.Destroy(id)

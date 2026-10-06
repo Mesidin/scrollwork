@@ -117,3 +117,128 @@ weather:
 One weather state covers the whole pack. The current state is stored on the save. Continuing a game keeps the hour and does not repeat the phase line for a change that already happened.
 
 Room flags: `outdoor` or `outdoors`, `windowed` or `sheltered`, `underground`, `lit`. See `help building`.
+
+## Economy, Durability & Crafting
+
+Packs can enable tiered economy mechanics across equipment, commerce, and production:
+
+### Durability & Repair
+Items may define `durability` and `max_durability`. `repairable: true` opts an item into repair. Omitting it leaves the item unrepairable.
+A landed hit wears the wielded weapon by one point, and wears every worn armor piece by one point.
+Condition states range from *pristine* to *good*, *worn*, *damaged*, and *broken*.
+A broken weapon still swings, for 1d2. Broken armor soaks nothing.
+NPCs with `repairer: true` (or the `repairer` / `blacksmith` flag) mend gear for the shop currency, or the pack's advancement currency when the NPC has no shop (`repair`, `repair <item>`, `repair all`).
+`repair all` fixes every piece you can afford and names the ones left undone.
+
+### Merchant Purses & Commerce
+`shop.purse` (including 0), `shop.max_purse`, or `shop.dynamic: true` makes the till finite, and it stays finite after the balance hits zero.
+Merchants buy only what the till can cover. Buying from them refills the till, up to `max_purse` when that is set.
+Damaged goods sell for value scaled by remaining durability. An item with nothing left does not sell.
+A pile resource, such as coin, can grow past its starting amount.
+
+### Banking & Vaults
+NPCs or scenery items marked with `banker: true` (or the `bank` flag) act as common vaults.
+- `deposit <amount|all> [currency]` moves a loose pile (or the advancement currency) into the vault. `deposit all coin` names the pile.
+- `withdraw <amount|all> [currency]` brings it back. A capped pool that cannot hold the whole withdrawal leaves the rest in the vault.
+- `balance` (or `account`, `bank`) displays all stored currencies.
+Funds in your bank are safely preserved across character deaths.
+
+### Crafting Pipeline & Skill Progression
+Packs list recipes in `recipes.yaml` (a bare list, or a `recipes:` list). Each recipe has:
+- `id` and `name`
+- `station` (optional keyword or flag in the room, such as `anvil` or `workbench`)
+- `tools` (carried or worn items required to craft, not consumed)
+- `requires` (ingredient prototype ids and counts; worn items are not consumed; an omitted count means 1)
+- `produces` (an item id, or `{item, count}`)
+- `discovered` (optional boolean, defaults to true). When false, the recipe is locked until it is taught or learned with `use`.
+- `skill` (optional check in `rpg.yaml`). A set `difficulty` replaces the check's difficulty. A failed roll ruins one ingredient. A success at least 3 above the target that was rolled produces a superior item with bonus durability.
+- `min_skill` (optional minimum trained rank in the named skill). The parent attribute does not count.
+
+Learning recipes:
+- **Taught by NPCs**: `NPCYAML.teach_recipes` maps dialogue topics to recipe IDs.
+- **Learned from Items**: Items with `use.learn_recipe: "<id>"` teach the recipe when `use` is performed.
+- **Lua Scripts**: Scripts can call `learn_recipe("id")`.
+
+Commands:
+- `recipes` (alias `rlist`) lists only your known recipes and marks whether station, tools, and materials are on hand.
+- `craft` (alias `make`) matches an exact name, id, or whole word to craft the item.
+
+### Resource Gathering & Perception
+Rooms or scenery items can define a `gather:` node:
+- `resource` (prototype ID spawned upon harvesting)
+- `name` (display name of the resource)
+- `skill` (check to roll, defaulting to `notice`)
+- `difficulty` (difficulty threshold to find resources)
+- `bonus_dc` (higher DC threshold granting extra yields for sharp perception)
+- `remaining` and `max` (harvest capacity)
+- `regen_every` (ticks between node replenishment)
+
+Commands:
+- `gather` / `forage` harvests available materials. A perception roll exceeding `bonus_dc` awards bonus resources. Depleted nodes regenerate over time.
+
+## Quests, Dialogue & Objectives
+
+Packs define adventures and storyline tasks in `quests.yaml` (or `world/quests.yaml`).
+
+### Schema
+Each quest includes:
+- `id`: unique identifier string
+- `title`: display name of the quest
+- `desc`: narrative briefing / description
+- `giver`: prototype ID of the NPC who offers the quest
+- `turnin`: prototype ID of the NPC to whom completed tasks are turned in (defaults to `giver`)
+- `auto_start`: boolean (optional). Automatically starts when available without needing manual acceptance.
+- `requires_quest`: list of quest IDs that must be completed before this quest unlocks.
+- `objectives`: list of task objectives:
+  - `id`: identifier for progress tracking
+  - `desc`: human-readable objective description
+  - `kind`: `kill`, `collect`, `visit`, or `talk`
+  - `target`: prototype ID, room ID, keyword, or NPC name
+  - `count`: quantity required (defaults to 1)
+  - `consume`: boolean (optional, for `collect`). Consumes required items upon completion.
+- `rewards`:
+  - `xp`: experience points granted
+  - `currency`: currency key (defaults to pack primary advancement currency or `coin`)
+  - `amount`: currency amount awarded
+  - `items`: list of item prototype IDs granted to player inventory
+  - `recipes`: list of recipe IDs taught upon completion
+  - `message`: dialogue response or closing narrative text
+
+### Commands
+- `quests` (or `tasks`, `journal`): list active quests with objective progress, and completed quests.
+- `quest <id>`: display detailed briefing, objectives status, and rewards.
+- `quest accept <id>`: accept a quest from an NPC present in the room.
+- `quest complete <id>`: turn in finished objectives to the recipient and claim rewards.
+- `talk <npc>`: displays offered quests and ready turn-ins on the NPC.
+
+## Hunting, Loot Tables & Field Survival
+
+Packs define mobile loot tables, salvaging, field repair kits, and dynamic mob respawns in `world/npcs.yaml` and `world/items.yaml`.
+
+### Loot Drops & Corpse Skinning
+NPCs can define `loot`:
+- `item`: prototype ID of the dropped item.
+- `chance`: percentage chance to drop (1-100, default 100).
+- `count`: number of items dropped (default 1).
+- `skin_only`: boolean. If false (default), drops directly into the room on death. If true, remains on the corpse and must be harvested using `skin corpse` or `butcher corpse`.
+- When butchered, corpses gain the `skinned` flag, update their short description to `(butchered)`, and cannot be skinned a second time.
+
+### Salvage & Deconstruction
+Items can define `salvage` in `world/items.yaml`:
+- `item`: component prototype ID produced.
+- `count`: quantity produced.
+The `salvage <item>` command (aliases `breakdown`, `dismantle`, `deconstruct`) dismantles an item in inventory into its constituent components and consumes the item.
+
+### Field Repair Kits
+Items can function as field maintenance tools (e.g. whetstones, sewing kits, leather patches) by defining `repair_kit`:
+- `uses`: remaining uses before the kit is consumed.
+- `max_uses`: maximum capacity.
+- `amount`: durability restored per application (0 restores fully).
+- `skill`: optional skill check key required (e.g. `crafting`).
+- `dc`: difficulty check (defaults to 7).
+Field repair kits allow adventurers to repair equipment out in the wild using `repair <item> with <kit>` or `use <kit> on <item>`. When away from repairers, `repair <item>` also attempts to use a carried repair kit.
+
+### Dynamic NPC Respawns
+NPCs can define `respawn_every: <ticks>` in `world/npcs.yaml`.
+When slain, the server schedules a respawn task. Once the interval expires, a fresh instance is spawned at the mobile's original home room and an arrival notification is sent to any players in that room.
+

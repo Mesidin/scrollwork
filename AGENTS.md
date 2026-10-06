@@ -89,7 +89,7 @@ Never put Old House fiction, Grit/Calm labels, or room text in Go. Those belong 
 ## Gaps (not implemented — don’t assume they exist)
 
 - CI on push (run `go test ./...` locally).
-- Crafting, economy beyond a shop NPC (proposal in `agent/features/economy.md`).
+- Supply-and-demand prices and stored discovery methods (the rest of `agent/features/economy.md`). Field kits and the vault are in the engine.
 - Networked multiplayer.
 - Infocom-style parser.
 - YAML comment preservation on `save pack` (help/intro/Lua are left alone).
@@ -102,7 +102,7 @@ To onboard agents quickly and maintain long-term momentum, consult and maintain 
 - **`agent/roadmap.md`**: Master backlog of planned features, active items, and completed tasks.
 - **`agent/features/`**: In-depth feature proposals and architectural designs:
   - `weather.md`: The implemented clock and weather scales, pack schema, and room flags.
-  - `economy.md`: Faucet/sink balance, dynamic merchant inventory/purses, item durability/repair sinks, and crafting pipelines.
+  - `economy.md`: Original proposal. Durability, repair, finite purses, recipes, field kits, and the vault are in the engine. Price curves and stored discovery methods are still only in that file.
 
 **Rule for agents**: When completing a task or wrapping up a session, update `agent/roadmap.md` and document what changed in `agent/progress.md`.
 
