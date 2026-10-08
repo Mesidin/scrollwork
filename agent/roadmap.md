@@ -82,7 +82,31 @@ Status Legend:
 
 ---
 
-## 6. Networking & Multiplayer (Long-Term)
+## 6. Followers, Parties & Companions
+
+* [x] **Follower Graph & Movement Propagation**:
+  * [x] Multi-tier follower propagation across room transitions (`moveFollowers`) for players and wandering mobs.
+  * [x] Loop detection preventing cyclic following (`StartFollowing`, `StopFollowing`).
+  * [x] Player commands: `follow` (alias `fol`), `unfollow` (aliases `unfol`, `stopfollow`), `lose` (aliases `ditch`, `shake`).
+* [x] **Party Management & Grouping**:
+  * [x] Group roster display showing levels and primary resource vitals (`group` / `party` / `gt`).
+  * [x] Invitation and joining system (`invite`, `join`). NPC acceptance via `party_member: true` or companion flag; open parties via `open_party: true`.
+  * [x] Leaving and disbanding parties.
+* [x] **Companions, Pets & Taming**:
+  * [x] Pack schema for NPCs (`companion`, `owner`, `loyalty`, `max_loyalty`, `stance`, `value`).
+  * [x] Shopkeeper pet purchases (`buy <pet> from <vendor>`).
+  * [x] Pet feeding and loyalty progression (`feed <pet> with <food>`). Taming wild animals flagged `tameable` or `pet` at loyalty >= 30.
+  * [x] Directing pets via `order` (`follow`, `stay`, `stance`, `attack`, `dismiss`). Stubborn refusal below 20 loyalty.
+* [x] **Combat Stances & Progression Sharing**:
+  * [x] Stance behavior in combat (`assist`, `defend`, `passive`, `stay`) via `CheckAssists`.
+  * [x] Quest kill objective credit and experience points shared when pets/companions land the killing blow.
+* [x] **Scripting API**:
+  * [x] Lua bindings: `follow`, `unfollow`, `set_companion`, `get_loyalty`, `set_loyalty`, `get_stance`, `set_stance`, `join_party`, `invite_party`, `leave_party`.
+* [x] **Review fixes**: tame AI, `kill` assists, shop stock, party disband, same-tick kill credit, room entry for followers, death recall, pet-only orders, and exact food matching.
+
+---
+
+## 7. Networking & Multiplayer (Long-Term)
 
 * [ ] **Server Port Binding**: Bind `internal/server` protocol session handling to TCP / Telnet / SSH.
 * [ ] **Multiplayer Session Management**: Player connection lifecycle, room broadcasts, and multi-user chat channels.

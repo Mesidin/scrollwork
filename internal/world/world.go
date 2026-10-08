@@ -236,6 +236,17 @@ type Entity struct {
 	HomeRoom     ID                     `json:"home_room,omitempty" yaml:"home_room,omitempty"`
 	// SlainBy is the entity that landed the killing blow. Empty means the death had no attacker.
 	SlainBy ID `json:"slain_by,omitempty" yaml:"slain_by,omitempty"`
+
+	Leader       ID     `json:"leader,omitempty" yaml:"leader,omitempty"`
+	Followers    []ID   `json:"followers,omitempty" yaml:"followers,omitempty"`
+	Owner        ID     `json:"owner,omitempty" yaml:"owner,omitempty"`
+	Loyalty      int    `json:"loyalty,omitempty" yaml:"loyalty,omitempty"`
+	MaxLoyalty   int    `json:"max_loyalty,omitempty" yaml:"max_loyalty,omitempty"`
+	Stance       string `json:"stance,omitempty" yaml:"stance,omitempty"` // assist, defend, passive, stay
+	RestStance   string `json:"rest_stance,omitempty" yaml:"rest_stance,omitempty"`
+	PartyLeader  ID     `json:"party_leader,omitempty" yaml:"party_leader,omitempty"`
+	PartyInvites []ID   `json:"party_invites,omitempty" yaml:"party_invites,omitempty"`
+	Companion    bool   `json:"companion,omitempty" yaml:"companion,omitempty"`
 }
 
 type LootDrop struct {
@@ -578,6 +589,12 @@ func (e *Entity) Clone() *Entity {
 		rk := *e.RepairKit
 		cp.RepairKit = &rk
 	}
+	if e.Followers != nil {
+		cp.Followers = append([]ID{}, e.Followers...)
+	}
+	if e.PartyInvites != nil {
+		cp.PartyInvites = append([]ID{}, e.PartyInvites...)
+	}
 	cp.Contents = append([]ID{}, e.Contents...)
 	cp.SlainBy = ""
 	return &cp
@@ -722,8 +739,184 @@ func (w *World) Destroy(id ID) {
 			}
 		}
 	}
+	if e.Leader != "" {
+		w.StopFollowing(e)
+	}
+	for _, fID := range append([]ID{}, e.Followers...) {
+		f := w.Get(fID)
+		if f != nil {
+			f.Leader = ""
+		}
+	}
+	e.Followers = nil
 	w.Detach(id)
 	delete(w.Entities, id)
+}
+
+// AddFollower adds followerID to e.Followers if not already present.
+func (e *Entity) AddFollower(followerID ID) {
+	for _, id := range e.Followers {
+		if id == followerID {
+			return
+		}
+	}
+	e.Followers = append(e.Followers, followerID)
+}
+
+// RemoveFollower removes followerID from e.Followers.
+func (e *Entity) RemoveFollower(followerID ID) {
+	var next []ID
+	for _, id := range e.Followers {
+		if id != followerID {
+			next = append(next, id)
+		}
+	}
+	e.Followers = next
+}
+
+// IsFollowing reports whether this entity is following targetID directly or indirectly.
+func (e *Entity) IsFollowing(targetID ID, w *World) bool {
+	if e == nil || targetID == "" || w == nil {
+		return false
+	}
+	curr := e.Leader
+	visited := map[ID]bool{e.ID: true}
+	for curr != "" {
+		if curr == targetID {
+			return true
+		}
+		if visited[curr] {
+			break
+		}
+		visited[curr] = true
+		parent := w.Get(curr)
+		if parent == nil {
+			break
+		}
+		curr = parent.Leader
+	}
+	return false
+}
+
+func (e *Entity) InParty() bool {
+	return e != nil && e.PartyLeader != ""
+}
+
+func (e *Entity) IsPartyLeader() bool {
+	return e != nil && e.PartyLeader != "" && e.PartyLeader == e.ID
+}
+
+// StartFollowing sets follower to follow leader, updating references and checking loops.
+func (w *World) StartFollowing(follower, leader *Entity) error {
+	if follower == nil || leader == nil {
+		return fmt.Errorf("invalid entity")
+	}
+	if follower.ID == leader.ID {
+		return fmt.Errorf("you cannot follow yourself")
+	}
+	if leader.IsFollowing(follower.ID, w) {
+		return fmt.Errorf("%s is already following %s", leader.Display(), follower.Display())
+	}
+	w.StopFollowing(follower)
+	follower.Leader = leader.ID
+	leader.AddFollower(follower.ID)
+	return nil
+}
+
+// StopFollowing clears following state for follower.
+func (w *World) StopFollowing(follower *Entity) {
+	if follower == nil || follower.Leader == "" {
+		return
+	}
+	old := w.Get(follower.Leader)
+	if old != nil {
+		old.RemoveFollower(follower.ID)
+	}
+	follower.Leader = ""
+}
+
+// PartyMembers returns entities whose party leader is still leaderID.
+// The leader is included only while that entity still points at itself.
+func (w *World) PartyMembers(leaderID ID) []*Entity {
+	if w == nil || leaderID == "" {
+		return nil
+	}
+	var members []*Entity
+	if leader := w.Get(leaderID); leader != nil && leader.PartyLeader == leaderID {
+		members = append(members, leader)
+	}
+	for _, e := range w.Entities {
+		if e.ID != leaderID && e.PartyLeader == leaderID {
+			members = append(members, e)
+		}
+	}
+	return members
+}
+
+// ClearParty drops every member, including a leader who still points at leaderID.
+func (w *World) ClearParty(leaderID ID) {
+	if w == nil || leaderID == "" {
+		return
+	}
+	for _, e := range w.Entities {
+		if e != nil && e.PartyLeader == leaderID {
+			e.PartyLeader = ""
+		}
+	}
+}
+
+// BreakFight clears a mutual fight between a and b. Other opponents are left alone.
+func BreakFight(a, b *Entity) {
+	clear := func(e, other *Entity) {
+		if e == nil || other == nil || e.Combat == nil || e.Combat.Target != other.ID {
+			return
+		}
+		e.Combat.Target = ""
+		e.Combat.NextSwing = 0
+	}
+	clear(a, b)
+	clear(b, a)
+}
+
+// FollowHop is one follower pulled into the leader's destination.
+type FollowHop struct {
+	Follower *Entity
+	Leader   *Entity
+}
+
+// PullFollowers moves followers who are still in old into dest.
+// Fighting, stay, and immobile followers are left behind and are not
+// picked up by a later exit from some other room.
+func (w *World) PullFollowers(leader, old, dest *Entity) []FollowHop {
+	if w == nil || leader == nil || old == nil || dest == nil {
+		return nil
+	}
+	var moved []FollowHop
+	visited := map[ID]bool{leader.ID: true}
+	queue := []*Entity{leader}
+	for len(queue) > 0 {
+		curr := queue[0]
+		queue = queue[1:]
+		for _, fID := range append([]ID{}, curr.Followers...) {
+			if visited[fID] {
+				continue
+			}
+			f := w.Get(fID)
+			if f == nil || f.Parent != old.ID {
+				continue
+			}
+			if f.InCombat() || strings.EqualFold(f.Stance, "stay") || f.HasFlag("immobile") {
+				continue
+			}
+			visited[fID] = true
+			if err := w.Move(f.ID, dest.ID); err != nil {
+				continue
+			}
+			moved = append(moved, FollowHop{Follower: f, Leader: curr})
+			queue = append(queue, f)
+		}
+	}
+	return moved
 }
 
 func (w *World) Spawn(protoID ID, dest ID) (*Entity, error) {

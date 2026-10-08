@@ -190,6 +190,218 @@ func (h *Host) bind(L *lua.LState, actor, self *world.Entity) {
 	L.SetGlobal("has_quest", L.NewFunction(func(L *lua.LState) int {
 		return h.luaHasQuest(L, actor)
 	}))
+	L.SetGlobal("join_party", L.NewFunction(func(L *lua.LState) int {
+		prefer := h.preferRoom(actor, self)
+		member := self
+		leader := actor
+		top := L.GetTop()
+		if top >= 1 && L.Get(1) != lua.LNil {
+			member = h.luaBeing(L.Get(1), prefer)
+		}
+		if top >= 2 && L.Get(2) != lua.LNil {
+			leader = h.luaBeing(L.Get(2), prefer)
+		}
+		if member == nil || leader == nil || h.World == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		wasLeader := member.PartyLeader == member.ID
+		if err := h.World.StartFollowing(member, leader); err != nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		if wasLeader {
+			h.World.ClearParty(member.ID)
+		}
+		leaderID := leader.PartyLeader
+		if leaderID == "" {
+			leaderID = leader.ID
+			leader.PartyLeader = leaderID
+		}
+		member.PartyLeader = leaderID
+		L.Push(lua.LTrue)
+		return 1
+	}))
+	L.SetGlobal("leave_party", L.NewFunction(func(L *lua.LState) int {
+		prefer := h.preferRoom(actor, self)
+		target := self
+		if L.GetTop() >= 1 && L.Get(1) != lua.LNil {
+			target = h.luaBeing(L.Get(1), prefer)
+		}
+		if target == nil || h.World == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		if target.PartyLeader == target.ID {
+			h.World.ClearParty(target.ID)
+		} else {
+			target.PartyLeader = ""
+		}
+		h.World.StopFollowing(target)
+		L.Push(lua.LTrue)
+		return 1
+	}))
+	L.SetGlobal("invite_party", L.NewFunction(func(L *lua.LState) int {
+		prefer := h.preferRoom(actor, self)
+		inviter := self
+		invitee := actor
+		top := L.GetTop()
+		if top >= 1 && L.Get(1) != lua.LNil {
+			inviter = h.luaBeing(L.Get(1), prefer)
+		}
+		if top >= 2 && L.Get(2) != lua.LNil {
+			invitee = h.luaBeing(L.Get(2), prefer)
+		}
+		if inviter == nil || invitee == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		invitee.PartyInvites = append(invitee.PartyInvites, inviter.ID)
+		if h.Echo != nil {
+			h.Echo(invitee, fmt.Sprintf("%s invites you to join their party. Type 'join %s' to accept.", inviter.Display(), strings.ToLower(inviter.Name)))
+		}
+		L.Push(lua.LTrue)
+		return 1
+	}))
+	L.SetGlobal("follow", L.NewFunction(func(L *lua.LState) int {
+		prefer := h.preferRoom(actor, self)
+		follower := self
+		leader := actor
+		top := L.GetTop()
+		if top >= 1 && L.Get(1) != lua.LNil {
+			follower = h.luaBeing(L.Get(1), prefer)
+		}
+		if top >= 2 && L.Get(2) != lua.LNil {
+			leader = h.luaBeing(L.Get(2), prefer)
+		}
+		if follower == nil || leader == nil || h.World == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		err := h.World.StartFollowing(follower, leader)
+		L.Push(lua.LBool(err == nil))
+		return 1
+	}))
+	L.SetGlobal("unfollow", L.NewFunction(func(L *lua.LState) int {
+		prefer := h.preferRoom(actor, self)
+		follower := self
+		if L.GetTop() >= 1 && L.Get(1) != lua.LNil {
+			follower = h.luaBeing(L.Get(1), prefer)
+		}
+		if follower == nil || h.World == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		h.World.StopFollowing(follower)
+		L.Push(lua.LTrue)
+		return 1
+	}))
+	L.SetGlobal("set_companion", L.NewFunction(func(L *lua.LState) int {
+		prefer := h.preferRoom(actor, self)
+		mob := self
+		owner := actor
+		loyalty := 100
+		stance := "assist"
+		top := L.GetTop()
+		if top >= 1 && L.Get(1) != lua.LNil {
+			mob = h.luaBeing(L.Get(1), prefer)
+		}
+		if top >= 2 && L.Get(2) != lua.LNil {
+			owner = h.luaBeing(L.Get(2), prefer)
+		}
+		if top >= 3 && L.Get(3) != lua.LNil {
+			loyalty = L.ToInt(3)
+		}
+		if top >= 4 && L.Get(4) != lua.LNil {
+			stance = L.ToString(4)
+		}
+		if mob == nil || owner == nil || h.World == nil {
+			L.Push(lua.LFalse)
+			return 1
+		}
+		mob.Companion = true
+		mob.Owner = owner.ID
+		mob.Loyalty = loyalty
+		if mob.MaxLoyalty <= 0 {
+			mob.MaxLoyalty = 100
+		}
+		if mob.Loyalty > mob.MaxLoyalty {
+			mob.MaxLoyalty = mob.Loyalty
+		}
+		mob.Stance = stance
+		_ = h.World.StartFollowing(mob, owner)
+		world.BreakFight(mob, owner)
+		L.Push(lua.LTrue)
+		return 1
+	}))
+	L.SetGlobal("get_loyalty", L.NewFunction(func(L *lua.LState) int {
+		prefer := h.preferRoom(actor, self)
+		target := self
+		if L.GetTop() >= 1 && L.Get(1) != lua.LNil {
+			target = h.luaBeing(L.Get(1), prefer)
+		}
+		if target == nil {
+			L.Push(lua.LNumber(0))
+			return 1
+		}
+		L.Push(lua.LNumber(target.Loyalty))
+		return 1
+	}))
+	L.SetGlobal("set_loyalty", L.NewFunction(func(L *lua.LState) int {
+		prefer := h.preferRoom(actor, self)
+		target := self
+		amount := 100
+		top := L.GetTop()
+		if top == 1 {
+			amount = L.ToInt(1)
+		} else if top >= 2 {
+			if L.Get(1) != lua.LNil {
+				target = h.luaBeing(L.Get(1), prefer)
+			}
+			amount = L.ToInt(2)
+		}
+		if target != nil {
+			target.Loyalty = amount
+			if target.MaxLoyalty <= 0 {
+				target.MaxLoyalty = 100
+			}
+			if target.Loyalty > target.MaxLoyalty {
+				target.MaxLoyalty = target.Loyalty
+			}
+		}
+		return 0
+	}))
+	L.SetGlobal("get_stance", L.NewFunction(func(L *lua.LState) int {
+		prefer := h.preferRoom(actor, self)
+		target := self
+		if L.GetTop() >= 1 && L.Get(1) != lua.LNil {
+			target = h.luaBeing(L.Get(1), prefer)
+		}
+		if target == nil {
+			L.Push(lua.LString(""))
+			return 1
+		}
+		L.Push(lua.LString(target.Stance))
+		return 1
+	}))
+	L.SetGlobal("set_stance", L.NewFunction(func(L *lua.LState) int {
+		prefer := h.preferRoom(actor, self)
+		target := self
+		st := "assist"
+		top := L.GetTop()
+		if top == 1 {
+			st = L.ToString(1)
+		} else if top >= 2 {
+			if L.Get(1) != lua.LNil {
+				target = h.luaBeing(L.Get(1), prefer)
+			}
+			st = L.ToString(2)
+		}
+		if target != nil {
+			target.Stance = st
+		}
+		return 0
+	}))
 }
 
 func (h *Host) luaMove(L *lua.LState, actor, self *world.Entity) int {

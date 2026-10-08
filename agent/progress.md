@@ -4,14 +4,14 @@ This document records the chronological development history, verified features, 
 
 ---
 
-## Current Status (as of Sep 29, 2026)
+## Current Status (as of Oct 8, 2026)
 
 * **Engine**: Go 1.22+ Bubble Tea MUD engine with runtime YAML+Lua pack loading.
 * **Test Suite**: `go test -count=1 ./...` passing 100% across all packages.
-* **Working Tree**: Clean on `master` branch.
+* **Working Tree**: Followers, parties, and pet companions, including the review fixes for tame AI, assists, shops, parties, kill credit, and movement.
 * **Sample Packs**:
   * `games/old-house`: Core story regression pack.
-  * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, and shop interactions.
+  * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, economy, quests, and companion interactions.
   * `games/game-3`: Pack stub initialized via `sudengine new game-3`.
 
 ---
@@ -220,6 +220,39 @@ This document records the chronological development history, verified features, 
   * Sandbox unit test `TestLuaTeleportAndQuestStatus` in `internal/script/script_test.go`.
   * Integration test `TestQuestRelocationIntegration` in `internal/server/quest_test.go`.
   * Updated `internal/docs/engine/systems.md` and `internal/docs/engine/building.md`.
+
+### Milestone 11: Followers, Parties, Companions & Pet Taming (Oct 7-8, 2026)
+* **Follower Graph & Movement Propagation**:
+  * Added `Leader`, `Followers`, and `IsFollowing` graph traversal to `internal/world`.
+  * Implemented acyclic following guards in `World.StartFollowing` and safe detaching in `World.StopFollowing` and `World.Destroy`.
+  * Movement propagation: `moveFollowers` propagates active followers through exits whenever their leader transitions rooms (supporting players, companion chains, and wandering AI).
+  * Player commands: `follow [target]` (lists status or begins following), `unfollow` (clears leader), `lose <target>` (shakes off a specific follower).
+* **Party Management & Grouping**:
+  * Added `PartyLeader` and `PartyInvites` to `Entity` with `World.PartyMembers` retrieval.
+  * Player commands: `group` / `party` (displays member levels and vitals), `invite <target>` (invites characters; companions and mobs flagged `party_member: true` automatically accept), `join <target>` (accepts invites or joins open parties flagged `open_party: true`), and leaving/disbanding.
+* **Companions, Pets & Taming**:
+  * Added `Companion`, `Owner`, `Loyalty`, `MaxLoyalty`, and `Stance` (`assist`, `defend`, `passive`, `stay`) to `world.Entity` and `NPCYAML` with pack YAML persistence.
+  * Commerce: purchasing companion mobiles from vendor shopkeepers (`buy <pet> from <vendor>`) automatically assigns ownership and initiates following.
+  * Feeding & Taming: `feed <pet> with <food>` consumes edible items, boosts loyalty (+15), and restores health. Wild beasts flagged `tameable` or `pet` convert to loyal companions at $\ge 30$ loyalty.
+  * Orders: `order <pet> <follow|stay|stance|attack|dismiss>`. Pets below 20 loyalty have a chance to stubbornly refuse orders.
+* **Combat Stances & Progression Sharing**:
+  * Integrated `combat.Engine.CheckAssists`: nearby followers respond based on combat stances (`assist` engages target; `defend` engages only when leader is targeted).
+  * Kill credit and progression sharing: `reapDead()` attributes kills by companions or party members to the player for quest objective updates and experience rewards.
+* **Lua Scripting Bindings**:
+  * Exposed `follow`, `unfollow`, `set_companion`, `get_loyalty`, `set_loyalty`, `get_stance`, `set_stance`, `join_party`, `invite_party`, and `leave_party`.
+* **Testing & Documentation**:
+  * Unit tests in `internal/commands/follow_test.go`, `internal/world/world_test.go`, and `internal/script/script_test.go`.
+  * Integration tests in `internal/server/follow_test.go` verifying following, combat assists, and quest kill attribution.
+  * Updated player manuals in `internal/docs/engine/commands.md` and `internal/docs/engine/systems.md`.
+* **Review fixes**:
+  * Owned, following, and `stay` mobiles skip aggro, wander, and pursue. Taming and buying break a fight with the owner.
+  * `kill` recruits assists before the mob retaliates. Defend joins only when the leader is under attack.
+  * Shop stock is the vendor's goods, not a loose copy or a pet the buyer already owns.
+  * A party leader who joins another party disbands the old one. `PartyMembers` ignores a leader who has already left. Lua `leave_party` on a leader clears every member.
+  * Kill credit is snapshotted before corpses are destroyed, so a companion who dies on the same tick still counts.
+  * Follower moves share `World.PullFollowers`. A following player gets a normal room entry. Script teleports, pursuit, and quest relocation pull followers in the departure room. Death brings owned companions to the start; `stay` companions are left behind.
+  * `follow` checks the mobile's own aggro flags. `order` is limited to a pet you own. `feed` ignores untameable mobiles and substring food names. `order follow` restores the stance from before `stay`. Party vitals use the pack's primary resource.
+
 
 
 

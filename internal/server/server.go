@@ -185,6 +185,9 @@ func (s *Server) moveEntity(ent, dest *world.Entity) error {
 			commands.Arrive(s.ctx(), old, dest)
 		}
 	}
+	if changed && old != nil {
+		s.moveFollowers(ent, old, dest, "")
+	}
 	return nil
 }
 
@@ -309,10 +312,21 @@ func (s *Server) ctx() *commands.Context {
 				return
 			}
 			s.Combat.Start(mob, player, s.World.Tick)
+			s.Combat.CheckAssists(s.World, player, mob, s.World.Tick, false)
 			sess.Send(protocol.TextEvent{
 				Channel: protocol.ChanAlert,
 				Text:    fmt.Sprintf("%s attacks you!", mob.CapDisplay()),
 			})
+		},
+		Assist: func(target *world.Entity, leaderAttacking bool) {
+			if target == nil || s.World == nil {
+				return
+			}
+			player := s.World.Player()
+			if player == nil {
+				return
+			}
+			s.Combat.CheckAssists(s.World, player, target, s.World.Tick, leaderAttacking)
 		},
 		BeginCapture: func(done func(text string)) {
 			sess.cap = &capture{done: done}
@@ -546,6 +560,9 @@ func (s *Server) ai() {
 		if !e.Alive(primary) {
 			continue
 		}
+		if strings.EqualFold(e.Stance, "stay") || (player != nil && (e.Owner == player.ID || e.Leader == player.ID)) {
+			continue
+		}
 		room := s.World.RoomOf(e)
 		if room == nil {
 			continue
@@ -554,6 +571,7 @@ func (s *Server) ai() {
 		if player != nil && s.World.RoomOf(player) == room {
 			if e.AI.Awake(e) && !e.InCombat() && player.Alive(primary) {
 				s.Combat.Start(e, player, s.World.Tick)
+				s.Combat.CheckAssists(s.World, player, e, s.World.Tick, false)
 				if player.ID == s.Session.PlayerID {
 					s.Session.Send(protocol.TextEvent{
 						Channel: protocol.ChanAlert,
@@ -566,13 +584,16 @@ func (s *Server) ai() {
 				if r.Max > 0 && r.Current*100/r.Max < 30 && len(room.Exits) > 0 {
 					for d, ex := range room.Exits {
 						if !ex.Closed {
+							destRoom := s.World.Get(ex.To)
+							watching := player != nil && s.World.RoomOf(player) == room
 							_ = s.World.Move(e.ID, ex.To)
-							if player != nil && s.World.RoomOf(player) == room {
+							if watching {
 								s.Session.Send(protocol.TextEvent{
 									Channel: protocol.ChanNarrative,
 									Text:    fmt.Sprintf("%s flees %s.", e.CapDisplay(), d),
 								})
 							}
+							s.moveFollowers(e, room, destRoom, d)
 							break
 						}
 					}
@@ -606,17 +627,22 @@ func (s *Server) ai() {
 			}
 			ex := dirs[s.rng.Intn(len(dirs))]
 			old := room
+			destRoom := s.World.Get(ex.To)
+			wasOld := player != nil && s.World.RoomOf(player) == old
+			wasDest := player != nil && destRoom != nil && s.World.RoomOf(player) == destRoom
 			_ = s.World.Move(e.ID, ex.To)
-			if player != nil {
-				if s.World.RoomOf(player) == old {
+			came := s.moveFollowers(e, old, destRoom, ex.Dir)
+			if player != nil && !came {
+				if wasOld {
 					s.Session.Send(protocol.TextEvent{
 						Channel: protocol.ChanNarrative,
 						Text:    fmt.Sprintf("%s leaves %s.", e.CapDisplay(), ex.Dir),
 					})
 				}
-				if s.World.RoomOf(player) == s.World.Get(ex.To) {
+				if wasDest {
 					if e.AI.Awake(e) && player.Alive(primary) && !e.InCombat() {
 						s.Combat.Start(e, player, s.World.Tick)
+						s.Combat.CheckAssists(s.World, player, e, s.World.Tick, false)
 						s.Session.Send(protocol.TextEvent{
 							Channel: protocol.ChanAlert,
 							Text:    fmt.Sprintf("%s arrives — and attacks you!", e.CapDisplay()),
@@ -659,23 +685,61 @@ func (s *Server) pursue(e, room, player *world.Entity) {
 		return
 	}
 	old := room
+	wasOld := player != nil && s.World.RoomOf(player) == old
+	wasDest := player != nil && dest != nil && s.World.RoomOf(player) == dest
 	_ = s.World.Move(e.ID, step.To)
-	if player == nil {
+	came := s.moveFollowers(e, old, dest, step.Dir)
+	if player == nil || came {
 		return
 	}
-	if s.World.RoomOf(player) == old {
+	if wasOld {
 		s.Session.Send(protocol.TextEvent{
 			Channel: protocol.ChanNarrative,
 			Text:    fmt.Sprintf("%s leaves %s.", e.CapDisplay(), step.Dir),
 		})
 	}
-	if s.World.RoomOf(player) == s.World.Get(step.To) {
+	if wasDest {
 		s.Session.Send(protocol.TextEvent{
 			Channel: protocol.ChanAlert,
 			Text:    fmt.Sprintf("%s follows you.", e.CapDisplay()),
 		})
 		s.pushRoom()
 	}
+}
+
+func (s *Server) moveFollowers(leader, old, dest *world.Entity, dir string) bool {
+	if s == nil || s.World == nil || leader == nil || old == nil || dest == nil {
+		return false
+	}
+	player := s.World.Player()
+	came := false
+	for _, hop := range s.World.PullFollowers(leader, old, dest) {
+		f := hop.Follower
+		if f == nil {
+			continue
+		}
+		if player != nil && f.ID == player.ID {
+			came = true
+			s.Session.Send(protocol.TextEvent{
+				Channel: protocol.ChanNarrative,
+				Text:    commands.FollowYou(hop.Leader, dir),
+			})
+			commands.Arrive(s.ctx(), old, dest)
+			s.pushRoom()
+			continue
+		}
+		if player != nil && hop.Leader != nil && hop.Leader.ID == player.ID {
+			s.Session.Send(protocol.TextEvent{
+				Channel: protocol.ChanNarrative,
+				Text:    commands.FollowsYou(f, dir),
+			})
+		}
+		if s.Scripts != nil {
+			_, _ = s.Scripts.Call("on_leave", f, old)
+			_, _ = s.Scripts.Call("on_enter", f, dest)
+		}
+	}
+	return came
 }
 
 // corpseID keeps the mob's dotted id out of the corpse id, so the last
@@ -685,9 +749,20 @@ func corpseID(id world.ID) world.ID {
 	return world.ID("corpse#" + safe)
 }
 
+type allyCredit struct {
+	owner, leader, party world.ID
+}
+
 func (s *Server) reapDead() {
 	primary := s.Pack.RPG.Primary()
 	player := s.World.Player()
+	credit := map[world.ID]allyCredit{}
+	for id, e := range s.World.Entities {
+		if e == nil {
+			continue
+		}
+		credit[id] = allyCredit{owner: e.Owner, leader: e.Leader, party: e.PartyLeader}
+	}
 	var dead []world.ID
 	for _, e := range s.World.Entities {
 		if e.Kind != world.KindMobile {
@@ -702,15 +777,32 @@ func (s *Server) reapDead() {
 		if e == nil {
 			continue
 		}
+		s.World.StopFollowing(e)
+		for _, fID := range append([]world.ID{}, e.Followers...) {
+			f := s.World.Get(fID)
+			if f != nil {
+				f.Leader = ""
+			}
+		}
+		e.Followers = nil
 		room := s.World.RoomOf(e)
 		_, _ = s.Scripts.Call("on_death", player, e)
-		if player != nil && e.SlainBy == player.ID && s.Pack != nil && len(s.Pack.Quests) > 0 {
+		isPlayerKill := false
+		if player != nil && e.SlainBy == player.ID {
+			isPlayerKill = true
+		} else if player != nil && e.SlainBy != "" {
+			if k, ok := credit[e.SlainBy]; ok {
+				isPlayerKill = k.owner == player.ID || k.leader == player.ID ||
+					(player.PartyLeader != "" && k.party == player.PartyLeader)
+			}
+		}
+		if isPlayerKill && s.Pack != nil && len(s.Pack.Quests) > 0 {
 			notices := quest.UpdateKill(player, e, s.Pack.Quests, s.World)
 			for _, n := range notices {
 				s.Session.Send(protocol.TextEvent{Channel: protocol.ChanAlert, Text: n.String()})
 			}
 		}
-		if player != nil && e.XP > 0 && s.Pack.RPG.Advancement.On() {
+		if (isPlayerKill || e.SlainBy == "") && player != nil && e.XP > 0 && s.Pack.RPG.Advancement.On() {
 			s.Session.Send(protocol.TextEvent{
 				Channel: protocol.ChanNarrative,
 				Text:    fmt.Sprintf("You gain %d experience.", e.XP),
@@ -818,7 +910,47 @@ func (s *Server) reapDead() {
 		if s.World.StartRoom != "" {
 			_ = s.World.Move(player.ID, s.World.StartRoom)
 		}
+		s.recallCompanions(player)
 		commands.EnterRoom(s.ctx(), true)
+	}
+}
+
+func (s *Server) recallCompanions(player *world.Entity) {
+	if s == nil || s.World == nil || player == nil || s.World.StartRoom == "" {
+		return
+	}
+	start := s.World.Get(s.World.StartRoom)
+	if start == nil {
+		return
+	}
+	var ids []world.ID
+	for id, e := range s.World.Entities {
+		if e != nil && e.ID != player.ID && e.Owner == player.ID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		e := s.World.Get(id)
+		if e == nil {
+			continue
+		}
+		if strings.EqualFold(e.Stance, "stay") {
+			s.World.StopFollowing(e)
+			s.Session.Send(protocol.TextEvent{
+				Channel: protocol.ChanNarrative,
+				Text:    fmt.Sprintf("%s stays behind.", e.CapDisplay()),
+			})
+			continue
+		}
+		endFight(s.World, e)
+		if s.World.RoomOf(e) != start {
+			_ = s.World.Move(e.ID, start.ID)
+		}
+		s.Session.Send(protocol.TextEvent{
+			Channel: protocol.ChanNarrative,
+			Text:    fmt.Sprintf("%s is with you.", e.CapDisplay()),
+		})
 	}
 }
 

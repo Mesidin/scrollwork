@@ -303,3 +303,38 @@ func TestRelocateWithoutUpdateHomeLeavesLeash(t *testing.T) {
 		t.Fatalf("one-shot move widened the leash: %+v", guard.AI.Rooms)
 	}
 }
+
+func TestRelocatePullsFollowersInTheSameRoom(t *testing.T) {
+	w := world.New()
+	roomA := &world.Entity{ID: "roomA", Kind: world.KindRoom}
+	roomB := &world.Entity{ID: "roomB", Kind: world.KindRoom}
+	roomC := &world.Entity{ID: "roomC", Kind: world.KindRoom}
+	guard := &world.Entity{ID: "mob.guard", Kind: world.KindMobile, Name: "guard"}
+	page := &world.Entity{ID: "page", Kind: world.KindMobile, Name: "page"}
+	stay := &world.Entity{ID: "stay", Kind: world.KindMobile, Name: "stay", Stance: "stay"}
+	far := &world.Entity{ID: "far", Kind: world.KindMobile, Name: "far"}
+	for _, e := range []*world.Entity{roomA, roomB, roomC, guard, page, stay, far} {
+		w.Add(e)
+	}
+	_ = w.Move(guard.ID, roomA.ID)
+	_ = w.Move(page.ID, roomA.ID)
+	_ = w.Move(stay.ID, roomA.ID)
+	_ = w.Move(far.ID, roomC.ID)
+	_ = w.StartFollowing(page, guard)
+	_ = w.StartFollowing(stay, guard)
+	_ = w.StartFollowing(far, guard)
+
+	moved := quest.ApplyRelocations(w, roomA.ID, []quest.Relocation{{Mob: "mob.guard", To: "roomB"}})
+	if len(moved) != 1 || !moved[0].OK {
+		t.Fatalf("relocate: %+v", moved)
+	}
+	if page.Parent != roomB.ID {
+		t.Fatalf("page should follow the guard, parent %s", page.Parent)
+	}
+	if stay.Parent != roomA.ID || far.Parent != roomC.ID {
+		t.Fatalf("stay %s far %s", stay.Parent, far.Parent)
+	}
+	if len(moved[0].Pulled) != 1 || moved[0].Pulled[0] != "page" {
+		t.Fatalf("pulled %+v", moved[0].Pulled)
+	}
+}

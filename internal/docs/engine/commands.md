@@ -64,11 +64,24 @@ ask <who> about <topic>
 talk <who>            list topics they might know
 ```
 
+## Following & Parties
+
+```
+follow / fol [who]       follow someone or check who you follow and who follows you
+unfollow / unfol         stop following your leader
+lose / ditch / shake <who> shake off someone following you
+group / party / gt       display active party members, health, and status
+invite <who>             invite a companion or player to join your party
+join <who>               join another party (if invited or open)
+order / command <pet> <act> order a pet you own: follow, stay, stance, attack, dismiss
+feed <pet> with <food>   feed a companion or tameable animal; builds loyalty and can tame
+```
+
 ## Economy & Crafting
 
 ```
 list / lshop         browse merchant inventory and till amount
-buy <item> [from <who>]
+buy <item|pet> [from <who>]
 sell <item> [to <who>]
 deposit <amount|all> store coin in a local bank or vault
 withdraw <amount|all> retrieve coin from your vault

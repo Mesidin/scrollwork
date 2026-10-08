@@ -249,3 +249,59 @@ Field repair kits allow adventurers to repair equipment out in the wild using `r
 NPCs can define `respawn_every: <ticks>` in `world/npcs.yaml`.
 When slain, the server schedules a respawn task. Once the interval expires, a fresh instance is spawned at the mobile's original home room and an arrival notification is sent to any players in that room.
 
+## Followers, Parties & Companions
+
+Packs can configure companion mobiles, pets, and party members in `world/npcs.yaml` and via Lua scripts.
+
+### Following
+- `follow <who>` (alias `fol`): Begin following another character or mobile. If no argument is given, lists current leader and followers. Loops (e.g. A following B following A) are refused.
+- `unfollow` (aliases `unfol`, `stopfollow`): Stop following your current leader.
+- `lose <who>` (aliases `ditch`, `shake`): Remove someone currently following you.
+- When a leader changes rooms (walk, flee, wander, pursue, scripted teleport, or quest relocation), followers still in that room come along. A player who is following gets a normal room entry. `stay`, immobile, and fighting followers stay behind and do not catch up on a later exit.
+- On death, owned companions are brought to the start room. A companion told to `stay` is left behind and stops following.
+
+### Parties
+- `group` (aliases `party`, `gt`): Displays active party members, leader, levels, and primary resource status.
+- `invite <who>`: Invite another player or mobile into your party. Companions and NPCs with `party_member: true` automatically accept.
+- `join <who>`: Accept an outstanding party invitation or join an NPC whose party is flagged `open_party: true`.
+- Party leaders can disband or remove members; members can leave using `group leave`.
+
+### Companions & Pets
+NPCs can declare companion and loyalty attributes in `world/npcs.yaml`:
+- `companion`: boolean. Marks the NPC as an ally or pet.
+- `owner`: entity ID of the owner.
+- `loyalty` and `max_loyalty`: numeric loyalty pool (defaults to 100).
+- `stance`: combat and movement demeanor (`assist`, `defend`, `passive`, or `stay`).
+- `value`: purchase cost when stocked by an NPC shopkeeper.
+
+#### Pet Commands & Care
+- **Acquisition**: Can be purchased from vendors (`buy puppy from vendor`) or tamed in the wild.
+- **Feeding**: `feed <pet> with <food>` (or `feed <food> to <pet>`) works on a companion or an animal flagged `tameable` or `pet`. Food is an item flagged `food` or `edible`, tagged as food, or carrying an exact food keyword. It restores loyalty (+15) and heals a portion of the primary resource. Animals flagged `tameable` or `pet` become loyal companions once their loyalty reaches 30.
+- **Orders**: `order <pet> <action>` (alias `command`) requires a pet you own, or an unowned companion already following you. Party membership alone does not grant orders.
+  - `follow`: Resumes following and restores the stance from before `stay`.
+  - `stay`: Holds position in the current room and stops following. The previous stance is remembered.
+  - `stance <assist|defend|passive|stay>`: Configures combat engagement stance.
+  - `attack <target>` (or `kill`): Commands pet to attack a specific mobile.
+  - `dismiss`: Releases companion, clearing ownership and following links.
+  - *Loyalty Check*: If loyalty drops below 20, pets may stubbornly growl and ignore orders.
+
+### Combat Stances & Assist
+When a leader enters combat or is attacked, nearby companions and party members respond based on their stance:
+- `assist` (default): Immediately engages whoever the leader attacks or is attacked by.
+- `defend`: Engages only enemies that actively attack or target the leader.
+- `passive`: Refrains from entering combat unless explicitly ordered to attack.
+- `stay`: Remains in place and does not join battles. Owned, following, and `stay` mobiles also skip aggro, wander, and pursue.
+
+### Quest Objectives & Experience
+- Kills landed by pets, companions, or party members count toward the player's active `kill` quest objectives.
+- Defeating enemies alongside companions grants the player their full earned experience.
+
+### Scripting API
+Lua scripts can manipulate companions and parties using sandbox bindings:
+- `set_companion(mob, [owner], [loyalty], [stance])`
+- `get_loyalty(mob)` / `set_loyalty(mob, amount)`
+- `get_stance(mob)` / `set_stance(mob, stance)`
+- `follow(follower, leader)` / `unfollow(follower)`
+- `join_party(member, leader)`, `invite_party(inviter, invitee)`, `leave_party(member)`
+
+

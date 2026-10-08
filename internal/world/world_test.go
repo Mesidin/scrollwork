@@ -93,3 +93,91 @@ func TestSlugAndDirs(t *testing.T) {
 		t.Fatal(dx, dy, dz, ok)
 	}
 }
+
+func TestFollowingAndParty(t *testing.T) {
+	w := New()
+	alice := &Entity{ID: "alice", Kind: KindPlayer, Name: "Alice"}
+	bob := &Entity{ID: "bob", Kind: KindPlayer, Name: "Bob"}
+	charlie := &Entity{ID: "charlie", Kind: KindMobile, Name: "Charlie"}
+	w.Add(alice)
+	w.Add(bob)
+	w.Add(charlie)
+
+	// Alice follows Bob
+	if err := w.StartFollowing(alice, bob); err != nil {
+		t.Fatalf("StartFollowing: %v", err)
+	}
+	if alice.Leader != "bob" {
+		t.Fatalf("expected alice leader bob, got %s", alice.Leader)
+	}
+	if len(bob.Followers) != 1 || bob.Followers[0] != "alice" {
+		t.Fatalf("expected bob followers [alice], got %+v", bob.Followers)
+	}
+
+	// Loop detection: Bob cannot follow Alice
+	if err := w.StartFollowing(bob, alice); err == nil {
+		t.Fatalf("expected loop error when Bob follows Alice, got nil")
+	}
+
+	// Charlie follows Alice (Charlie -> Alice -> Bob)
+	if err := w.StartFollowing(charlie, alice); err != nil {
+		t.Fatalf("charlie follows alice: %v", err)
+	}
+	// Bob cannot follow Charlie either
+	if err := w.StartFollowing(bob, charlie); err == nil {
+		t.Fatalf("expected indirect loop error when Bob follows Charlie")
+	}
+
+	// Stop following
+	w.StopFollowing(alice)
+	if alice.Leader != "" {
+		t.Fatalf("expected alice leader cleared, got %s", alice.Leader)
+	}
+	if len(bob.Followers) != 0 {
+		t.Fatalf("expected bob followers empty, got %+v", bob.Followers)
+	}
+
+	// Party grouping
+	bob.PartyLeader = "bob"
+	alice.PartyLeader = "bob"
+	members := w.PartyMembers("bob")
+	if len(members) != 2 {
+		t.Fatalf("expected 2 party members, got %d", len(members))
+	}
+	if !bob.IsPartyLeader() || alice.IsPartyLeader() {
+		t.Fatalf("party leader checks failed")
+	}
+
+	bob.PartyLeader = "carol"
+	members = w.PartyMembers("bob")
+	if len(members) != 1 || members[0].ID != "alice" {
+		t.Fatalf("a leader who left should not stay on the roster: %+v", members)
+	}
+}
+
+func TestPullFollowersLeavesStayAndDistantPets(t *testing.T) {
+	w := New()
+	a := &Entity{ID: "a", Kind: KindRoom}
+	b := &Entity{ID: "b", Kind: KindRoom}
+	leader := &Entity{ID: "leader", Kind: KindMobile, Name: "leader"}
+	near := &Entity{ID: "near", Kind: KindMobile, Name: "near"}
+	stay := &Entity{ID: "stay", Kind: KindMobile, Name: "stay", Stance: "stay"}
+	far := &Entity{ID: "far", Kind: KindMobile, Name: "far"}
+	for _, e := range []*Entity{a, b, leader, near, stay, far} {
+		w.Add(e)
+	}
+	_ = w.Move(leader.ID, a.ID)
+	_ = w.Move(near.ID, a.ID)
+	_ = w.Move(stay.ID, a.ID)
+	_ = w.Move(far.ID, b.ID)
+	_ = w.StartFollowing(near, leader)
+	_ = w.StartFollowing(stay, leader)
+	_ = w.StartFollowing(far, leader)
+	moved := w.PullFollowers(leader, a, b)
+	if len(moved) != 1 || moved[0].Follower.ID != "near" {
+		t.Fatalf("expected only the nearby free follower, got %+v", moved)
+	}
+	if near.Parent != b.ID || stay.Parent != a.ID || far.Parent != b.ID {
+		t.Fatalf("parents near %s stay %s far %s", near.Parent, stay.Parent, far.Parent)
+	}
+}

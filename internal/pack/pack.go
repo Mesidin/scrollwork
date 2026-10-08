@@ -167,6 +167,13 @@ type NPCYAML struct {
 	Shop         *world.Shop               `yaml:"shop"`
 	Loot         []world.LootDrop          `yaml:"loot,omitempty"`
 	RespawnEvery int                       `yaml:"respawn_every,omitempty"`
+	Companion    bool                      `yaml:"companion,omitempty"`
+	Loyalty      int                       `yaml:"loyalty,omitempty"`
+	MaxLoyalty   int                       `yaml:"max_loyalty,omitempty"`
+	Stance       string                    `yaml:"stance,omitempty"`
+	RestStance   string                    `yaml:"rest_stance,omitempty"`
+	Owner        string                    `yaml:"owner,omitempty"`
+	Value        int                       `yaml:"value,omitempty"`
 }
 
 type Pack struct {
@@ -669,6 +676,13 @@ func npcFromYAML(n NPCYAML) *world.Entity {
 		Shop:         n.Shop,
 		Loot:         n.Loot,
 		RespawnEvery: n.RespawnEvery,
+		Companion:    n.Companion,
+		Loyalty:      n.Loyalty,
+		MaxLoyalty:   n.MaxLoyalty,
+		Stance:       n.Stance,
+		RestStance:   n.RestStance,
+		Owner:        world.ID(n.Owner),
+		Value:        n.Value,
 		Flags:        map[string]bool{},
 		Takeable:     false,
 	}
@@ -1060,6 +1074,13 @@ func (p *Pack) SyncFromWorld(w *world.World) {
 			Shop:         e.Shop,
 			Loot:         e.Loot,
 			RespawnEvery: e.RespawnEvery,
+			Companion:    e.Companion,
+			Loyalty:      e.Loyalty,
+			MaxLoyalty:   e.MaxLoyalty,
+			Stance:       e.Stance,
+			RestStance:   e.RestStance,
+			Owner:        string(e.Owner),
+			Value:        e.Value,
 		})
 	}
 }

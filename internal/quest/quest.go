@@ -294,6 +294,9 @@ type MoveResult struct {
 	Message string
 	OK      bool
 	Reason  string
+	FromID  string
+	DestID  string
+	Pulled  []string
 }
 
 // ApplyRelocations moves each reward entry. prefer is the actor's room, used
@@ -323,14 +326,24 @@ func ApplyRelocations(w *world.World, prefer world.ID, rels []Relocation) []Move
 			out = append(out, res)
 			continue
 		}
+		fromID := mob.Parent
 		if err := w.Move(mob.ID, dest.ID); err != nil {
 			res.Reason = fmt.Sprintf("%s could not enter %s.", rel.Mob, rel.To)
 			out = append(out, res)
 			continue
 		}
+		if from := w.Get(fromID); from != nil {
+			for _, hop := range w.PullFollowers(mob, from, dest) {
+				if hop.Follower != nil {
+					res.Pulled = append(res.Pulled, string(hop.Follower.ID))
+				}
+			}
+		}
 		if rel.UpdateHome {
 			world.RememberHome(mob, dest)
 		}
+		res.FromID = string(fromID)
+		res.DestID = string(dest.ID)
 		res.OK = true
 		out = append(out, res)
 	}

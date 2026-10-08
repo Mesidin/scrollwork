@@ -67,6 +67,14 @@ var engineAliases = map[string]string{
 	"quest":    "quest", "task": "quest",
 	"skin":     "skin", "butcher": "skin",
 	"salvage":  "salvage", "breakdown": "salvage", "dismantle": "salvage", "deconstruct": "salvage",
+	"follow":   "follow", "fol": "follow",
+	"unfollow": "unfollow", "stopfollow": "unfollow", "unfol": "unfollow",
+	"lose":     "lose", "ditch": "lose", "shake": "lose",
+	"group":    "group", "party": "group", "gt": "group",
+	"invite":   "invite",
+	"join":     "join",
+	"order":    "order", "command": "order",
+	"feed":     "feed",
 }
 
 func Parse(line string, packCanonical func(string) string) Parsed {

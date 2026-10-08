@@ -37,6 +37,7 @@ type Context struct {
 	SavePack      func() error
 	ReloadScripts func() error
 	StartFight    func(mob *world.Entity)
+	Assist        func(target *world.Entity, leaderAttacking bool)
 	BuildWalk     *bool
 	OnMoveFail    func(dir string) bool // buildwalk hook; return true if handled
 	After         func()                // push UI
@@ -121,6 +122,14 @@ func init() {
 	register("quest", questCmd)
 	register("skin", skinCmd)
 	register("salvage", salvageCmd)
+	register("follow", followCmd)
+	register("unfollow", unfollowCmd)
+	register("lose", loseCmd)
+	register("group", groupCmd)
+	register("invite", inviteCmd)
+	register("join", joinCmd)
+	register("order", orderCmd)
+	register("feed", feedCmd)
 	for _, d := range []string{"north", "south", "east", "west", "up", "down", "northeast", "northwest", "southeast", "southwest", "in", "out"} {
 		dir := d
 		register(dir, func(c *Context, _ Parsed) { move(c, dir) })
@@ -1085,9 +1094,13 @@ func kill(c *Context, p Parsed) {
 	if e.Combat == nil {
 		e.Combat = &world.Combat{RoundSpeed: c.Pack.Meta.CombatEvery, Attacks: []world.Attack{{Name: "hit", Damage: "1d4"}}}
 	}
+	opened := e.Combat.Target == ""
 	c.Actor.Combat.Target = e.ID
 	c.Actor.Combat.NextSwing = c.Tick + 1
-	if e.Combat.Target == "" {
+	if c.Assist != nil {
+		c.Assist(e, true)
+	}
+	if opened {
 		e.Combat.Target = c.Actor.ID
 		e.Combat.NextSwing = c.Tick + 1
 	}
@@ -1240,7 +1253,32 @@ func buy(c *Context, p Parsed) {
 		}
 	}
 	if item == nil {
+		room := c.World.RoomOf(npc)
+		if room != nil {
+			for _, rid := range room.Contents {
+				it := c.World.Get(rid)
+				if it == nil || it.ID == npc.ID || it.ID == c.Actor.ID {
+					continue
+				}
+				if it.Owner != npc.ID || it.Companion {
+					continue
+				}
+				if it.HasKeyword(firstWord(what)) {
+					if item != nil {
+						c.Print("Which one?")
+						return
+					}
+					item = it
+				}
+			}
+		}
+	}
+	if item == nil {
 		c.Print("%s doesn't have a %q.", npc.CapDisplay(), what)
+		return
+	}
+	if item.Owner == c.Actor.ID {
+		c.Print("You already own %s.", item.Display())
 		return
 	}
 	cur := shopCurrency(c, npc)
@@ -1250,6 +1288,29 @@ func buy(c *Context, p Parsed) {
 		return
 	}
 	c.Actor.AdjustRes(cur, -price)
+	if item.Kind == world.KindMobile || item.Companion || item.HasFlag("pet") {
+		room := c.World.RoomOf(c.Actor)
+		if room != nil && item.Parent != room.ID {
+			_ = c.World.Move(item.ID, room.ID)
+		}
+		item.Kind = world.KindMobile
+		item.Companion = true
+		item.Owner = c.Actor.ID
+		if item.Loyalty <= 0 {
+			item.Loyalty = 100
+		}
+		if item.MaxLoyalty <= 0 {
+			item.MaxLoyalty = 100
+		}
+		if item.Stance == "" {
+			item.Stance = "assist"
+		}
+		_ = c.World.StartFollowing(item, c.Actor)
+		world.BreakFight(item, c.Actor)
+		economy.VendorReceive(npc, price)
+		c.Print("You buy %s for %d %s. %s is now following you!", item.Display(), price, c.Pack.Lexicon.Label(cur), item.CapDisplay())
+		return
+	}
 	if err := c.World.Move(item.ID, c.Actor.ID); err != nil {
 		c.Actor.AdjustRes(cur, price)
 		c.Print("%s", err.Error())
@@ -1468,6 +1529,7 @@ func move(c *Context, dir string) {
 	old := room
 	_ = c.World.Move(c.Actor.ID, dest.ID)
 	Arrive(c, old, dest)
+	moveFollowers(c, c.Actor, old, dest, dir)
 }
 
 // Arrive runs the leave and enter hooks after the actor is already in dest.
@@ -2415,6 +2477,7 @@ func questCmd(c *Context, p Parsed) {
 				if mv.Message != "" {
 					c.Print("%s", mv.Message)
 				}
+				arriveWithLeader(c, mv)
 				continue
 			}
 			if mv.Reason != "" {
@@ -2816,5 +2879,793 @@ func salvageCmd(c *Context, p Parsed) {
 		c.Print("You carefully break down %s into: %s.", itName, strings.Join(obtained, ", "))
 	} else {
 		c.Print("You break down %s, but nothing was recovered.", itName)
+	}
+}
+
+func moveFollowers(c *Context, leader, old, dest *world.Entity, dir string) {
+	if c == nil || c.World == nil || leader == nil || old == nil || dest == nil {
+		return
+	}
+	for _, hop := range c.World.PullFollowers(leader, old, dest) {
+		f := hop.Follower
+		if f == nil {
+			continue
+		}
+		if c.Actor != nil && f.ID == c.Actor.ID {
+			c.Tell(protocol.ChanNarrative, FollowYou(hop.Leader, dir))
+			Arrive(c, old, dest)
+			continue
+		}
+		if c.Actor != nil && hop.Leader != nil && hop.Leader.ID == c.Actor.ID {
+			c.Print("%s", FollowsYou(f, dir))
+		}
+		if c.Scripts != nil {
+			_, _ = c.Scripts.Call("on_leave", f, old)
+			_, _ = c.Scripts.Call("on_enter", f, dest)
+		}
+	}
+}
+
+func FollowYou(leader *world.Entity, dir string) string {
+	name := "them"
+	if leader != nil {
+		name = leader.Display()
+	}
+	if dir == "" {
+		return fmt.Sprintf("You follow %s.", name)
+	}
+	return fmt.Sprintf("You follow %s %s.", name, dir)
+}
+
+func FollowsYou(f *world.Entity, dir string) string {
+	name := "Someone"
+	if f != nil {
+		name = f.Display()
+	}
+	if dir == "" {
+		return fmt.Sprintf("%s follows you.", name)
+	}
+	return fmt.Sprintf("%s follows you %s.", name, dir)
+}
+
+func arriveWithLeader(c *Context, mv quest.MoveResult) {
+	if c == nil || c.World == nil || len(mv.Pulled) == 0 {
+		return
+	}
+	old := c.World.Get(world.ID(mv.FromID))
+	dest := c.World.Get(world.ID(mv.DestID))
+	for _, id := range mv.Pulled {
+		f := c.World.Get(world.ID(id))
+		if f == nil {
+			continue
+		}
+		if c.Actor != nil && f.ID == c.Actor.ID {
+			c.Print("You follow along.")
+			Arrive(c, old, dest)
+			continue
+		}
+		if c.Scripts != nil && old != nil && dest != nil {
+			_, _ = c.Scripts.Call("on_leave", f, old)
+			_, _ = c.Scripts.Call("on_enter", f, dest)
+		}
+		c.Print("%s follows along.", f.CapDisplay())
+	}
+}
+
+func followCmd(c *Context, p Parsed) {
+	if len(p.Args) == 0 {
+		if c.Actor.Leader != "" {
+			leader := c.World.Get(c.Actor.Leader)
+			if leader != nil {
+				c.Print("You are following %s.", leader.Display())
+			} else {
+				c.World.StopFollowing(c.Actor)
+				c.Print("You are not following anyone.")
+			}
+		} else {
+			c.Print("You are not following anyone.")
+		}
+
+		if len(c.Actor.Followers) > 0 {
+			var names []string
+			for _, fID := range c.Actor.Followers {
+				f := c.World.Get(fID)
+				if f != nil {
+					names = append(names, f.Display())
+				}
+			}
+			if len(names) > 0 {
+				c.Print("Following you: %s.", strings.Join(names, ", "))
+			} else {
+				c.Print("No one is following you.")
+			}
+		} else {
+			c.Print("No one is following you.")
+		}
+		return
+	}
+
+	targetName := strings.ToLower(strings.TrimSpace(p.Rest))
+	if targetName == "self" || targetName == "none" || targetName == "stop" {
+		if c.Actor.Leader == "" {
+			c.Print("You are not following anyone.")
+			return
+		}
+		oldLeader := c.World.Get(c.Actor.Leader)
+		c.World.StopFollowing(c.Actor)
+		if oldLeader != nil {
+			c.Print("You stop following %s.", oldLeader.Display())
+		} else {
+			c.Print("You stop following your leader.")
+		}
+		return
+	}
+
+	room := c.World.RoomOf(c.Actor)
+	if room == nil {
+		c.Print("You can't follow anyone from nowhere.")
+		return
+	}
+
+	target, _ := c.World.Match(c.Actor, targetName, world.ScopeRoom)
+	if target == nil {
+		c.Print("You don't see %q here.", targetName)
+		return
+	}
+	if target.ID == c.Actor.ID {
+		c.Print("You cannot follow yourself.")
+		return
+	}
+	if target.Kind != world.KindMobile && target.Kind != world.KindPlayer {
+		c.Print("You cannot follow %s.", target.Display())
+		return
+	}
+	if target.AI != nil && target.AI.Profile == "aggressive" && target.AI.Awake(target) {
+		c.Print("%s won't let you follow them!", target.Display())
+		return
+	}
+	if target.IsFollowing(c.Actor.ID, c.World) {
+		c.Print("%s is already following you! You cannot form a loop.", target.Display())
+		return
+	}
+
+	if err := c.World.StartFollowing(c.Actor, target); err != nil {
+		c.Print("Cannot follow: %s.", err.Error())
+		return
+	}
+	c.Print("You begin following %s.", target.Display())
+}
+
+func unfollowCmd(c *Context, p Parsed) {
+	if len(p.Args) == 0 {
+		if c.Actor.Leader == "" {
+			c.Print("You are not following anyone.")
+			return
+		}
+		oldLeader := c.World.Get(c.Actor.Leader)
+		c.World.StopFollowing(c.Actor)
+		if oldLeader != nil {
+			c.Print("You stop following %s.", oldLeader.Display())
+		} else {
+			c.Print("You stop following your leader.")
+		}
+		return
+	}
+	loseCmd(c, p)
+}
+
+func loseCmd(c *Context, p Parsed) {
+	if len(p.Args) == 0 {
+		c.Print("Lose whom? Type 'lose <target>' or 'lose all'.")
+		return
+	}
+	targetName := strings.ToLower(strings.TrimSpace(p.Rest))
+	if targetName == "all" {
+		if len(c.Actor.Followers) == 0 {
+			c.Print("No one is following you.")
+			return
+		}
+		for _, fID := range append([]world.ID{}, c.Actor.Followers...) {
+			f := c.World.Get(fID)
+			if f != nil {
+				c.World.StopFollowing(f)
+			}
+		}
+		c.Print("You shake off all your followers.")
+		return
+	}
+
+	var found *world.Entity
+	for _, fID := range c.Actor.Followers {
+		f := c.World.Get(fID)
+		if f != nil && (strings.EqualFold(string(f.ID), targetName) || strings.EqualFold(string(f.PrototypeID), targetName) || f.HasKeyword(targetName)) {
+			found = f
+			break
+		}
+	}
+	if found == nil {
+		c.Print("No follower named %q is following you.", targetName)
+		return
+	}
+	c.World.StopFollowing(found)
+	c.Print("You shake off %s.", found.Display())
+}
+
+func groupCmd(c *Context, p Parsed) {
+	sub := ""
+	if len(p.Args) > 0 {
+		sub = strings.ToLower(p.Args[0])
+	}
+	switch sub {
+	case "invite":
+		if len(p.Args) < 2 {
+			c.Print("Invite whom? Type: group invite <name>")
+			return
+		}
+		inviteTarget(c, strings.TrimSpace(p.Rest[len(p.Args[0]):]))
+	case "join":
+		if len(p.Args) < 2 {
+			c.Print("Join whose party? Type: group join <name>")
+			return
+		}
+		joinTarget(c, strings.TrimSpace(p.Rest[len(p.Args[0]):]))
+	case "leave":
+		leaveParty(c)
+	case "disband", "disown":
+		disbandParty(c)
+	default:
+		showParty(c)
+	}
+}
+
+func showParty(c *Context) {
+	leaderID := c.Actor.PartyLeader
+	if leaderID == "" {
+		leaderID = c.Actor.ID
+	}
+	leader := c.World.Get(leaderID)
+	if leader == nil {
+		leader = c.Actor
+	}
+
+	members := c.World.PartyMembers(leaderID)
+	if len(members) == 0 {
+		members = []*world.Entity{c.Actor}
+	}
+
+	c.Print("Party of %s:", leader.Display())
+	for _, m := range members {
+		roleBadge := ""
+		if m.ID == leaderID {
+			roleBadge = " [Leader]"
+		}
+		resStr := ""
+		if c.Pack != nil && len(m.Resources) > 0 {
+			key := c.Pack.RPG.Primary()
+			if r, ok := m.Resources[key]; ok {
+				resStr = fmt.Sprintf(" | %s: %d/%d", c.Pack.Lexicon.Label(key), r.Current, r.Max)
+			}
+		}
+		stanceStr := ""
+		if m.Stance != "" {
+			stanceStr = fmt.Sprintf(" [%s]", m.Stance)
+		}
+		loyaltyStr := ""
+		if m.Companion || m.Owner != "" || m.Loyalty > 0 {
+			maxL := m.MaxLoyalty
+			if maxL <= 0 {
+				maxL = 100
+			}
+			loyaltyStr = fmt.Sprintf(" (Loyalty: %d/%d)", m.Loyalty, maxL)
+		}
+		c.Print("  %s (Lvl %d)%s%s%s%s", m.Display(), m.Level, roleBadge, resStr, stanceStr, loyaltyStr)
+	}
+
+	var extraFollowers []*world.Entity
+	for _, fID := range c.Actor.Followers {
+		f := c.World.Get(fID)
+		if f != nil && f.PartyLeader != leaderID {
+			extraFollowers = append(extraFollowers, f)
+		}
+	}
+	if len(extraFollowers) > 0 {
+		c.Print("Followers:")
+		for _, f := range extraFollowers {
+			stance := "assist"
+			if f.Stance != "" {
+				stance = f.Stance
+			}
+			loyaltyStr := ""
+			if f.Companion || f.Owner != "" || f.Loyalty > 0 {
+				maxL := f.MaxLoyalty
+				if maxL <= 0 {
+					maxL = 100
+				}
+				loyaltyStr = fmt.Sprintf(" (Loyalty: %d/%d)", f.Loyalty, maxL)
+			}
+			c.Print("  (Following) %s [%s]%s", f.Display(), stance, loyaltyStr)
+		}
+	}
+}
+
+func inviteCmd(c *Context, p Parsed) {
+	if len(p.Args) == 0 {
+		c.Print("Invite whom? Type: invite <name>")
+		return
+	}
+	inviteTarget(c, p.Rest)
+}
+
+func inviteTarget(c *Context, name string) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		c.Print("Invite whom?")
+		return
+	}
+	target, _ := c.World.Match(c.Actor, name, world.ScopeRoom)
+	if target == nil {
+		c.Print("You don't see %q here.", name)
+		return
+	}
+	if target.ID == c.Actor.ID {
+		c.Print("You cannot invite yourself.")
+		return
+	}
+	if target.Kind != world.KindMobile && target.Kind != world.KindPlayer {
+		c.Print("You cannot invite %s.", target.Display())
+		return
+	}
+
+	leaderID := c.Actor.PartyLeader
+	if leaderID != "" && leaderID != c.Actor.ID {
+		c.Print("Only the party leader can invite new members.")
+		return
+	}
+	if leaderID == "" {
+		c.Actor.PartyLeader = c.Actor.ID
+		leaderID = c.Actor.ID
+	}
+
+	if target.PartyLeader == leaderID {
+		c.Print("%s is already in your party.", target.Display())
+		return
+	}
+
+	if target.Companion || target.Owner == c.Actor.ID {
+		target.PartyLeader = leaderID
+		_ = c.World.StartFollowing(target, c.Actor)
+		c.Print("%s joins your party!", target.Display())
+		return
+	}
+
+	if c.Scripts != nil {
+		handled, _ := c.Scripts.Call("on_invite", c.Actor, target)
+		if handled {
+			return
+		}
+	}
+
+	if target.HasFlag("party_member") || target.HasFlag("companion") || target.HasFlag("follower") {
+		target.PartyLeader = leaderID
+		_ = c.World.StartFollowing(target, c.Actor)
+		c.Print("%s accepts your invitation and joins your party!", target.Display())
+		return
+	}
+
+	if target.Kind == world.KindMobile {
+		c.Print("%s declines to join your party.", target.Display())
+		return
+	}
+
+	target.PartyInvites = append(target.PartyInvites, c.Actor.ID)
+	c.Print("You invite %s to join your party.", target.Display())
+}
+
+func joinCmd(c *Context, p Parsed) {
+	if len(p.Args) == 0 {
+		c.Print("Join whose party? Type: join <name>")
+		return
+	}
+	joinTarget(c, p.Rest)
+}
+
+func joinTarget(c *Context, name string) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	target, _ := c.World.Match(c.Actor, name, world.ScopeRoom)
+	if target == nil {
+		c.Print("You don't see %q here.", name)
+		return
+	}
+
+	invited := false
+	targetLeader := target.PartyLeader
+	if targetLeader == "" {
+		targetLeader = target.ID
+	}
+	for i, inv := range c.Actor.PartyInvites {
+		if inv == target.ID || inv == targetLeader {
+			invited = true
+			c.Actor.PartyInvites = append(c.Actor.PartyInvites[:i], c.Actor.PartyInvites[i+1:]...)
+			break
+		}
+	}
+	if !invited && (target.Companion || target.Owner == c.Actor.ID || target.HasFlag("open_party") || target.HasFlag("party_leader")) {
+		invited = true
+	}
+
+	if !invited && c.Scripts != nil {
+		handled, _ := c.Scripts.Call("on_join", c.Actor, target)
+		if handled {
+			return
+		}
+	}
+
+	if !invited {
+		c.Print("You do not have an invite to join %s's party.", target.Display())
+		return
+	}
+
+	releaseOwnParty(c)
+
+	if target.PartyLeader == "" {
+		target.PartyLeader = target.ID
+		targetLeader = target.ID
+	}
+	c.Actor.PartyLeader = targetLeader
+	_ = c.World.StartFollowing(c.Actor, target)
+	c.Print("You have joined %s's party!", target.Display())
+}
+
+func releaseOwnParty(c *Context) {
+	if c == nil || c.Actor == nil || c.Actor.PartyLeader == "" {
+		return
+	}
+	if c.Actor.PartyLeader != c.Actor.ID {
+		leaveParty(c)
+		return
+	}
+	others := false
+	for _, m := range c.World.PartyMembers(c.Actor.ID) {
+		if m != nil && m.ID != c.Actor.ID {
+			others = true
+			break
+		}
+	}
+	if others {
+		disbandParty(c)
+		return
+	}
+	c.Actor.PartyLeader = ""
+}
+
+func leaveParty(c *Context) {
+	if c.Actor.PartyLeader == "" {
+		c.Print("You are not in a party.")
+		return
+	}
+	if c.Actor.PartyLeader == c.Actor.ID {
+		disbandParty(c)
+		return
+	}
+	oldLeader := c.World.Get(c.Actor.PartyLeader)
+	c.Actor.PartyLeader = ""
+	c.World.StopFollowing(c.Actor)
+	if oldLeader != nil {
+		c.Print("You leave %s's party.", oldLeader.Display())
+	} else {
+		c.Print("You leave the party.")
+	}
+}
+
+func disbandParty(c *Context) {
+	if c.Actor.PartyLeader == "" {
+		c.Print("You are not in a party.")
+		return
+	}
+	if c.Actor.PartyLeader != c.Actor.ID {
+		c.Print("Only the party leader can disband the party.")
+		return
+	}
+	c.World.ClearParty(c.Actor.ID)
+	c.Print("You disband the party.")
+}
+
+func isFood(item *world.Entity) bool {
+	if item == nil {
+		return false
+	}
+	if item.HasFlag("food") || item.HasFlag("edible") {
+		return true
+	}
+	for _, t := range item.Tags {
+		if strings.EqualFold(t, "food") || strings.EqualFold(t, "ration") || strings.EqualFold(t, "meat") || strings.EqualFold(t, "bread") {
+			return true
+		}
+	}
+	for _, kw := range []string{"food", "ration", "meat", "bread", "apple", "fish", "treat", "berry", "berries", "herb", "grain", "bone", "cheese"} {
+		for _, k := range item.Keywords {
+			if strings.EqualFold(k, kw) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func takesOrders(actor, pet *world.Entity) bool {
+	if actor == nil || pet == nil || pet.Kind != world.KindMobile {
+		return false
+	}
+	if pet.Owner == actor.ID {
+		return true
+	}
+	return pet.Companion && pet.Owner == "" && pet.Leader == actor.ID
+}
+
+func rememberStay(pet *world.Entity) {
+	if pet == nil {
+		return
+	}
+	if !strings.EqualFold(pet.Stance, "stay") {
+		pet.RestStance = pet.Stance
+		if pet.RestStance == "" {
+			pet.RestStance = "assist"
+		}
+	}
+	pet.Stance = "stay"
+}
+
+func resumeFollowStance(pet *world.Entity) {
+	if pet == nil || !strings.EqualFold(pet.Stance, "stay") {
+		return
+	}
+	next := pet.RestStance
+	if next == "" || strings.EqualFold(next, "stay") {
+		next = "assist"
+	}
+	pet.Stance = next
+	pet.RestStance = ""
+}
+
+func orderCmd(c *Context, p Parsed) {
+	fields := strings.Fields(p.Rest)
+	if len(fields) < 2 {
+		c.Print("Order whom to do what? Syntax: order <pet> <follow|stay|stance <assist|defend|passive>|attack <target>|dismiss>")
+		return
+	}
+
+	orderVerbs := map[string]bool{
+		"follow": true, "stay": true, "stance": true,
+		"assist": true, "defend": true, "passive": true,
+		"attack": true, "kill": true, "dismiss": true,
+		"to": true,
+	}
+
+	var pet *world.Entity
+	actionIdx := 1
+	for i := len(fields) - 1; i >= 1; i-- {
+		wLow := strings.ToLower(fields[i])
+		if orderVerbs[wLow] {
+			candidate := strings.Join(fields[:i], " ")
+			if m, err := resolve(c, candidate, world.ScopeRoom); err == nil && m.Kind == world.KindMobile {
+				pet = m
+				actionIdx = i
+				break
+			}
+		}
+	}
+	if pet == nil {
+		if m, err := resolve(c, fields[0], world.ScopeRoom); err == nil && m.Kind == world.KindMobile {
+			pet = m
+			actionIdx = 1
+		} else {
+			c.Print("You don't see %q here.", fields[0])
+			return
+		}
+	}
+
+	if !takesOrders(c.Actor, pet) {
+		c.Print("%s does not take orders from you.", pet.CapDisplay())
+		return
+	}
+
+	if pet.MaxLoyalty > 0 && pet.Loyalty < 20 {
+		r := 0
+		if c.RNG != nil {
+			r = c.RNG.Intn(100)
+		} else {
+			r = rand.Intn(100)
+		}
+		if r < 50 {
+			c.Print("%s growls stubbornly and ignores your command. Its loyalty is too low (%d/%d).", pet.CapDisplay(), pet.Loyalty, pet.MaxLoyalty)
+			return
+		}
+	}
+
+	actionTokens := fields[actionIdx:]
+	if len(actionTokens) > 0 && strings.EqualFold(actionTokens[0], "to") {
+		actionTokens = actionTokens[1:]
+	}
+	if len(actionTokens) == 0 {
+		c.Print("Order %s to do what?", pet.Display())
+		return
+	}
+
+	act := strings.ToLower(actionTokens[0])
+	switch act {
+	case "follow":
+		resumeFollowStance(pet)
+		if err := c.World.StartFollowing(pet, c.Actor); err != nil {
+			c.Print("%s cannot follow you: %v", pet.CapDisplay(), err)
+			return
+		}
+		c.Print("%s begins following you.", pet.CapDisplay())
+
+	case "stay":
+		c.World.StopFollowing(pet)
+		rememberStay(pet)
+		c.Print("%s stays put.", pet.CapDisplay())
+
+	case "stance":
+		if len(actionTokens) < 2 {
+			st := pet.Stance
+			if st == "" {
+				st = "assist"
+			}
+			c.Print("%s's stance is currently '%s'. Options: assist, defend, passive, stay.", pet.CapDisplay(), st)
+			return
+		}
+		mode := strings.ToLower(actionTokens[1])
+		switch mode {
+		case "assist", "defend", "passive":
+			pet.Stance = mode
+			c.Print("%s's stance is now %s.", pet.CapDisplay(), mode)
+		case "stay":
+			c.World.StopFollowing(pet)
+			rememberStay(pet)
+			c.Print("%s stays put (stance: stay).", pet.CapDisplay())
+		default:
+			c.Print("Unknown stance %q. Options: assist, defend, passive, stay.", mode)
+		}
+
+	case "assist", "defend", "passive":
+		pet.Stance = act
+		c.Print("%s's stance is now %s.", pet.CapDisplay(), act)
+
+	case "attack", "kill":
+		if len(actionTokens) < 2 {
+			c.Print("Order %s to attack whom?", pet.Display())
+			return
+		}
+		targetName := strings.Join(actionTokens[1:], " ")
+		target, err := resolve(c, targetName, world.ScopeRoom)
+		if err != nil {
+			c.Print("%s", err.Error())
+			return
+		}
+		if target.Kind != world.KindMobile && target.Kind != world.KindPlayer {
+			c.Print("%s cannot fight %s.", pet.CapDisplay(), target.Display())
+			return
+		}
+		if target.ID == pet.ID || target.ID == c.Actor.ID {
+			c.Print("%s refuses to attack that.", pet.CapDisplay())
+			return
+		}
+		every := 4
+		if c.Pack != nil && c.Pack.Meta.CombatEvery > 0 {
+			every = c.Pack.Meta.CombatEvery
+		}
+		if pet.Combat == nil {
+			pet.Combat = &world.Combat{RoundSpeed: every, Attacks: []world.Attack{{Name: "bite", Damage: "1d4"}}}
+		}
+		if target.Combat == nil {
+			target.Combat = &world.Combat{RoundSpeed: every, Attacks: []world.Attack{{Name: "hit", Damage: "1d4"}}}
+		}
+		pet.Combat.Target = target.ID
+		pet.Combat.NextSwing = c.Tick + 1
+		if target.Combat.Target == "" {
+			target.Combat.Target = pet.ID
+			target.Combat.NextSwing = c.Tick + 1
+		}
+		c.Print("You order %s to attack %s! %s leaps into combat!", pet.Display(), target.Display(), pet.CapDisplay())
+
+	case "dismiss":
+		c.World.StopFollowing(pet)
+		if pet.PartyLeader == c.Actor.PartyLeader || pet.PartyLeader == c.Actor.ID {
+			pet.PartyLeader = ""
+		}
+		pet.Owner = ""
+		pet.Companion = false
+		pet.Stance = ""
+		pet.RestStance = ""
+		c.Print("You dismiss %s. It wanders off.", pet.CapDisplay())
+
+	default:
+		c.Print("Unknown order %q. Options: follow, stay, stance, attack, dismiss.", act)
+	}
+}
+
+func feedCmd(c *Context, p Parsed) {
+	rest := strings.TrimSpace(p.Rest)
+	if rest == "" {
+		c.Print("Feed whom with what? Syntax: feed <pet> with <item>")
+		return
+	}
+	var petStr, foodStr string
+	low := strings.ToLower(rest)
+	if idx := strings.Index(low, " to "); idx >= 0 {
+		foodStr = strings.TrimSpace(rest[:idx])
+		petStr = strings.TrimSpace(rest[idx+4:])
+	} else if idx := strings.Index(low, " with "); idx >= 0 {
+		petStr = strings.TrimSpace(rest[:idx])
+		foodStr = strings.TrimSpace(rest[idx+6:])
+	} else {
+		fields := strings.Fields(rest)
+		if len(fields) < 2 {
+			c.Print("Feed whom with what? Syntax: feed <pet> with <item>")
+			return
+		}
+		if m, err := resolve(c, fields[0], world.ScopeRoom); err == nil && m.Kind == world.KindMobile {
+			petStr = fields[0]
+			foodStr = strings.Join(fields[1:], " ")
+		} else {
+			foodStr = fields[0]
+			petStr = strings.Join(fields[1:], " ")
+		}
+	}
+
+	pet, err := resolve(c, petStr, world.ScopeRoom)
+	if err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+	if pet.Kind != world.KindMobile {
+		c.Print("You can't feed %s.", pet.Display())
+		return
+	}
+
+	food, err := resolve(c, foodStr, world.ScopeInventory)
+	if err != nil {
+		c.Print("%s", err.Error())
+		return
+	}
+
+	if !isFood(food) {
+		c.Print("%s sniffs %s with disinterest. That's not food.", pet.CapDisplay(), food.Display())
+		return
+	}
+	if pet.Owner != c.Actor.ID && !pet.Companion && !pet.HasFlag("tameable") && !pet.HasFlag("pet") {
+		c.Print("%s will not take food from you.", pet.CapDisplay())
+		return
+	}
+
+	c.World.Destroy(food.ID)
+	if pet.MaxLoyalty <= 0 {
+		pet.MaxLoyalty = 100
+	}
+	pet.Loyalty += 15
+	if pet.Loyalty > pet.MaxLoyalty {
+		pet.Loyalty = pet.MaxLoyalty
+	}
+	if c.Pack != nil {
+		primary := c.Pack.RPG.Primary()
+		if primary != "" {
+			pet.AdjustRes(primary, 5)
+		}
+	}
+
+	c.Print("You feed %s to %s. %s happily devours it! (Loyalty: %d/%d)", food.Display(), pet.Display(), pet.CapDisplay(), pet.Loyalty, pet.MaxLoyalty)
+
+	if pet.Owner == "" && (pet.HasFlag("tameable") || pet.HasFlag("pet") || pet.Companion) {
+		if pet.Loyalty >= 30 {
+			pet.Owner = c.Actor.ID
+			pet.Companion = true
+			if pet.Stance == "" {
+				pet.Stance = "assist"
+			}
+			_ = c.World.StartFollowing(pet, c.Actor)
+			world.BreakFight(pet, c.Actor)
+			c.Print("%s has grown fond of you and is now your companion!", pet.CapDisplay())
+		}
 	}
 }

@@ -214,3 +214,140 @@ end
 		t.Fatal("item prototype should not take a mobile keyword flag")
 	}
 }
+
+func TestLuaPartyAndCompanion(t *testing.T) {
+	w := world.New()
+	room := &world.Entity{ID: "room", Kind: world.KindRoom}
+	actor := &world.Entity{ID: "player", Kind: world.KindPlayer, Name: "Hero"}
+	wolf := &world.Entity{ID: "wolf", Kind: world.KindMobile, Name: "grey wolf", Keywords: []string{"wolf"}, Scripts: "wolf.lua"}
+	ranger := &world.Entity{ID: "ranger", Kind: world.KindMobile, Name: "ranger", Keywords: []string{"ranger"}, Scripts: "ranger.lua"}
+	for _, e := range []*world.Entity{room, actor, wolf, ranger} {
+		w.Add(e)
+	}
+	_ = w.Move(actor.ID, room.ID)
+	_ = w.Move(wolf.ID, room.ID)
+	_ = w.Move(ranger.ID, room.ID)
+
+	wolfLua := `
+function on_use(actor, self)
+    assert(set_companion(self, actor, 80, "defend") == true)
+    assert(get_loyalty(self) == 80)
+    set_loyalty(self, 95)
+    assert(get_loyalty(self) == 95)
+    assert(get_stance(self) == "defend")
+    set_stance(self, "assist")
+    assert(get_stance(self) == "assist")
+    return true
+end
+`
+	rangerLua := `
+function on_ask(actor, self, topic)
+    if topic == "party" then
+        assert(join_party(self, actor) == true)
+        return true
+    elseif topic == "invite" then
+        assert(invite_party(self, actor) == true)
+        return true
+    elseif topic == "leave" then
+        assert(leave_party(self) == true)
+        return true
+    end
+    return false
+end
+`
+	h := New(map[string]string{
+		"wolf.lua":   wolfLua,
+		"ranger.lua": rangerLua,
+	})
+	h.World = w
+
+	// 1. Companion wolf test
+	ok, err := h.Call("on_use", actor, wolf)
+	if err != nil || !ok {
+		t.Fatalf("wolf lua error: %v, ok=%v", err, ok)
+	}
+	if !wolf.Companion || wolf.Owner != actor.ID || wolf.Loyalty != 95 || wolf.Stance != "assist" {
+		t.Fatalf("wolf companion state mismatch: %+v", wolf)
+	}
+	if wolf.Leader != actor.ID {
+		t.Fatalf("expected wolf to be following actor")
+	}
+
+	// 2. Ranger join party test
+	ok, err = h.Call("on_ask", actor, ranger, "party")
+	if err != nil || !ok {
+		t.Fatalf("ranger join party error: %v", err)
+	}
+	if ranger.PartyLeader != actor.ID || ranger.Leader != actor.ID {
+		t.Fatalf("ranger party state mismatch: %+v", ranger)
+	}
+
+	// 3. Ranger leave party test
+	ok, err = h.Call("on_ask", actor, ranger, "leave")
+	if err != nil || !ok {
+		t.Fatalf("ranger leave party error: %v", err)
+	}
+	if ranger.PartyLeader != "" || ranger.Leader != "" {
+		t.Fatalf("ranger should have left party: %+v", ranger)
+	}
+
+	// 4. Ranger invite player test
+	ok, err = h.Call("on_ask", actor, ranger, "invite")
+	if err != nil || !ok {
+		t.Fatalf("ranger invite error: %v", err)
+	}
+	found := false
+	for _, inv := range actor.PartyInvites {
+		if inv == ranger.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected actor to have party invite from ranger")
+	}
+}
+
+func TestLuaLeaderLeaveAndJoinReleasesMembers(t *testing.T) {
+	w := world.New()
+	room := &world.Entity{ID: "room", Kind: world.KindRoom}
+	actor := &world.Entity{ID: "player", Kind: world.KindPlayer, Name: "Hero"}
+	wolf := &world.Entity{ID: "wolf", Kind: world.KindMobile, Name: "wolf", Keywords: []string{"wolf"}, Scripts: "wolf.lua"}
+	ranger := &world.Entity{ID: "ranger", Kind: world.KindMobile, Name: "ranger"}
+	for _, e := range []*world.Entity{room, actor, wolf, ranger} {
+		w.Add(e)
+	}
+	actor.PartyLeader = actor.ID
+	wolf.PartyLeader = actor.ID
+	_ = w.StartFollowing(wolf, actor)
+
+	h := New(map[string]string{"wolf.lua": `
+function on_use(actor, self)
+    return leave_party(actor)
+end
+function on_ask(actor, self, topic)
+    return join_party(self, actor)
+end
+`})
+	h.World = w
+	ok, err := h.Call("on_use", actor, wolf)
+	if err != nil || !ok {
+		t.Fatalf("leave: %v ok=%v", err, ok)
+	}
+	if actor.PartyLeader != "" || wolf.PartyLeader != "" {
+		t.Fatalf("leader leave should clear the party, actor %s wolf %s", actor.PartyLeader, wolf.PartyLeader)
+	}
+
+	wolf.PartyLeader = wolf.ID
+	ranger.PartyLeader = wolf.ID
+	ok, err = h.Call("on_ask", actor, wolf, "party")
+	if err != nil || !ok {
+		t.Fatalf("join: %v ok=%v", err, ok)
+	}
+	if wolf.PartyLeader != actor.ID {
+		t.Fatalf("wolf joined %s", wolf.PartyLeader)
+	}
+	if ranger.PartyLeader != "" {
+		t.Fatalf("old member still on wolf's party: %s", ranger.PartyLeader)
+	}
+}

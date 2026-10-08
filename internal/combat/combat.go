@@ -3,6 +3,7 @@ package combat
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 
 	"sudengine/internal/dice"
 	"sudengine/internal/economy"
@@ -32,6 +33,51 @@ func (e *Engine) Start(a, b *world.Entity, now int64) {
 	}
 	if b.Combat.NextSwing == 0 {
 		b.Combat.NextSwing = now + 1
+	}
+}
+
+// CheckAssists recruits allies in the leader's room.
+// leaderAttacking is set when the leader opened the fight. Defend joins only
+// when the leader is the one under attack, which is not visible from the
+// target's combat field once that target has been pointed at the leader.
+func (e *Engine) CheckAssists(w *world.World, leader, target *world.Entity, now int64, leaderAttacking bool) {
+	if e == nil || w == nil || leader == nil || target == nil {
+		return
+	}
+	room := w.RoomOf(leader)
+	if room == nil {
+		return
+	}
+	for _, kidID := range room.Contents {
+		kid := w.Get(kidID)
+		if kid == nil || kid.ID == leader.ID || kid.ID == target.ID {
+			continue
+		}
+		if kid.InCombat() || strings.EqualFold(kid.Stance, "stay") || strings.EqualFold(kid.Stance, "passive") {
+			continue
+		}
+		if kid.MaxLoyalty > 0 && kid.Loyalty <= 0 {
+			continue
+		}
+		isAlly := kid.Leader == leader.ID || kid.Owner == leader.ID ||
+			(leader.PartyLeader != "" && kid.PartyLeader == leader.PartyLeader)
+		if !isAlly {
+			continue
+		}
+		stance := strings.ToLower(kid.Stance)
+		if stance == "" {
+			stance = "assist"
+		}
+		if stance == "assist" || (stance == "defend" && !leaderAttacking) {
+			e.ensure(kid)
+			kid.Combat.Target = target.ID
+			if kid.Combat.NextSwing == 0 {
+				kid.Combat.NextSwing = now + 1
+			}
+			if e.Emit != nil {
+				e.Emit(leader, "combat", fmt.Sprintf("%s rushes to your aid against %s!", kid.Display(), target.Display()))
+			}
+		}
 	}
 }
 
