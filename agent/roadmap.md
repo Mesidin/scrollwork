@@ -49,7 +49,8 @@ Status Legend:
   * [x] Field survival repair kits (`repair_kit` schema, `repair <item> with <kit>`, `use <kit> on <item>`).
   * [x] Dynamic mob respawning (`respawn_every` tick heartbeat).
   * [x] Supply-and-demand price curves (`shop.price_curve: true`, `ScalePrice` floating curves based on stock).
-  * [x] Storing and persisting recipe discovery methods (`grant`, `buy`, `discover`, `all` in `Recipe.Discovery` and `Entity.RecipeMethods`).
+  * [x] Storing and persisting recipe discovery methods (`grant`, `buy`, `discover`, `all` in `Recipe.Discovery` and `Entity.RecipeMethods`). `buy` is recorded when the character reads that recipe's manual. Carrying the manual or buying the finished good does not teach it.
+  * [x] Review fixes for stock identity, NPC shop stock, ask/talk replies, follow-loop purchases and invites, loyalty caps, dismiss, and unambiguous script lookup.
 
 ---
 

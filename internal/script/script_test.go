@@ -215,6 +215,47 @@ end
 	}
 }
 
+func TestLookupDoesNotGuessAmongItems(t *testing.T) {
+	w := world.New()
+	room := &world.Entity{ID: "room", Kind: world.KindRoom, Name: "Ada's cottage"}
+	gem := &world.Entity{ID: "gem", Kind: world.KindItem, Name: "adamant shard"}
+	ring1 := &world.Entity{ID: "ring1", Kind: world.KindItem, Name: "gold ring", Keywords: []string{"ring"}}
+	ring2 := &world.Entity{ID: "ring2", Kind: world.KindItem, Name: "silver ring", Keywords: []string{"ring"}}
+	lamp := &world.Entity{ID: "lamp", Kind: world.KindItem, Name: "brass lantern", Keywords: []string{"lantern"}}
+	mob1 := &world.Entity{ID: "mob.a", Kind: world.KindMobile, Name: "scout", Keywords: []string{"token"}}
+	mob2 := &world.Entity{ID: "mob.b", Kind: world.KindMobile, Name: "scout", Keywords: []string{"token"}}
+	bait := &world.Entity{ID: "bait", Kind: world.KindItem, Name: "wooden token", Keywords: []string{"token"}}
+	actor := &world.Entity{ID: "player", Kind: world.KindPlayer, Scripts: "t.lua"}
+	for _, e := range []*world.Entity{room, gem, ring1, ring2, lamp, mob1, mob2, bait, actor} {
+		w.Add(e)
+		if e.Kind != world.KindRoom {
+			_ = w.Move(e.ID, room.ID)
+		}
+	}
+
+	h := New(map[string]string{"t.lua": `
+function on_use(actor, self)
+    set_flag("token", "marked")
+    set_flag("ring", "marked")
+    set_flag("ada", "marked")
+    set_flag("lantern", "lit")
+    return true
+end
+`})
+	h.World = w
+	if _, err := h.Call("on_use", actor, actor); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []*world.Entity{gem, ring1, ring2, mob1, mob2, bait, room} {
+		if e.HasFlag("marked") || e.HasFlag("lit") {
+			t.Fatalf("%s was edited from an ambiguous lookup", e.ID)
+		}
+	}
+	if !lamp.HasFlag("lit") {
+		t.Fatal("unique lantern keyword should resolve")
+	}
+}
+
 func TestLuaPartyAndCompanion(t *testing.T) {
 	w := world.New()
 	room := &world.Entity{ID: "room", Kind: world.KindRoom}
@@ -354,7 +395,6 @@ end
 		t.Fatalf("expected iron_dagger bought, got method %s", actor.RecipeMethod("iron_dagger"))
 	}
 }
-
 
 func TestLuaLeaderLeaveAndJoinReleasesMembers(t *testing.T) {
 	w := world.New()

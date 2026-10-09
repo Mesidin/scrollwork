@@ -402,6 +402,52 @@ func TestPriceCurveCalculations(t *testing.T) {
 	}
 }
 
+func TestStockCountsIgnoresNameSubstrings(t *testing.T) {
+	w := world.New()
+	vendor := &world.Entity{
+		ID:   "vendor",
+		Kind: world.KindMobile,
+		Shop: &world.Shop{
+			Currency:   "coin",
+			PriceCurve: true,
+			Stock:      []string{"ring", "band"},
+		},
+	}
+	earring := &world.Entity{
+		ID: "earring1", PrototypeID: "earring", Name: "silver earring",
+		Keywords: []string{"earring"}, Value: 20,
+	}
+	band := &world.Entity{
+		ID: "band1", PrototypeID: "band", Name: "silver ring",
+		Keywords: []string{"band"}, Value: 20,
+	}
+	charm := &world.Entity{
+		ID: "charm1", Name: "loop of wire", Keywords: []string{"ring"}, Value: 20,
+	}
+	w.Add(vendor)
+	w.Add(earring)
+	w.Add(band)
+	w.Add(charm)
+	_ = w.Move(band.ID, vendor.ID)
+
+	base, current := StockCounts(w, vendor, earring)
+	if base != 0 || current != 0 {
+		t.Fatalf("earring matched stock ring: base %d current %d", base, current)
+	}
+	if bp := BuyPrice(vendor, earring, w); bp != 20 {
+		t.Fatalf("earring looked scarce, price %d", bp)
+	}
+
+	base, current = StockCounts(w, vendor, band)
+	if base != 1 || current != 1 {
+		t.Fatalf("band stock: base %d current %d", base, current)
+	}
+	base, _ = StockCounts(w, vendor, charm)
+	if base != 1 {
+		t.Fatalf("exact keyword ring should count once, base %d", base)
+	}
+}
+
 func TestRecipeDiscoveryMethods(t *testing.T) {
 	rAll := Recipe{ID: "torch", Discovery: "all"}
 	rGrant := Recipe{ID: "cudgel", Discovery: "grant"}

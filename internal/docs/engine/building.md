@@ -242,7 +242,7 @@ recipe req <id> <item> [count]        add required ingredient to recipe
 recipe del <id>                       delete recipe from pack
 ```
 
-`disc` sets the discovery method: `all` (or `on`) means the recipe starts known by default. `grant`, `buy`, or `discover` (or `off`) locks the recipe until learned from a quest reward, NPC topic, merchant purchase, or finding a manual.
+`disc` sets how a character learns the recipe. `all` (or `on`) means the recipe starts known. `grant`, `buy`, or `discover` (or `off`) locks it until the character learns it. A quest reward or an NPC topic records `grant`. Using an item with `use.learn_recipe` records that recipe's method (`buy`, `discover`, or `grant`). Buying the finished good, or carrying the manual without using it, does not teach the recipe.
 
 ## Check your work
 

@@ -76,16 +76,25 @@ func (p *Pack) Validate() error {
 			} else if !hasResource(p, cur) {
 				errs = append(errs, fmt.Sprintf("npc %s: shop currency %q is not in rpg.yaml resources", n.ID, cur))
 			}
-			for _, sid := range n.Shop.Stock {
-				if _, ok := items[sid]; !ok {
-					errs = append(errs, fmt.Sprintf("npc %s: shop stock %q is not an item", n.ID, sid))
-				}
-			}
 		}
 		for _, loot := range n.Loot {
 			if _, ok := items[loot.Item]; !ok {
 				errs = append(errs, fmt.Sprintf("npc %s: loot item %q is not an item", n.ID, loot.Item))
 			}
+		}
+	}
+	for _, n := range p.NPCs {
+		if n.Shop == nil {
+			continue
+		}
+		for _, sid := range n.Shop.Stock {
+			if _, ok := items[sid]; ok {
+				continue
+			}
+			if _, ok := npcs[sid]; ok {
+				continue
+			}
+			errs = append(errs, fmt.Sprintf("npc %s: shop stock %q is not an item or npc", n.ID, sid))
 		}
 	}
 	for _, r := range p.Rooms {

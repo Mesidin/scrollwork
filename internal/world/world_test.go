@@ -181,3 +181,23 @@ func TestPullFollowersLeavesStayAndDistantPets(t *testing.T) {
 		t.Fatalf("parents near %s stay %s far %s", near.Parent, stay.Parent, far.Parent)
 	}
 }
+
+func TestResolveNonMobileIsUnique(t *testing.T) {
+	w := New()
+	room := &Entity{ID: "room", Kind: KindRoom, Name: "Ada's cottage"}
+	gem := &Entity{ID: "gem", Kind: KindItem, Name: "adamant shard"}
+	lamp := &Entity{ID: "lamp", Kind: KindItem, Name: "brass lantern", Keywords: []string{"lantern"}}
+	for _, e := range []*Entity{room, gem, lamp} {
+		w.Add(e)
+	}
+	_ = w.Move(gem.ID, room.ID)
+	_ = w.Move(lamp.ID, room.ID)
+
+	if _, err := w.ResolveNonMobile("ada", room.ID); err != ErrAmbiguous {
+		t.Fatalf("ada: %v", err)
+	}
+	got, err := w.ResolveNonMobile("lantern", room.ID)
+	if err != nil || got == nil || got.ID != "lamp" {
+		t.Fatalf("lantern: %v %+v", err, got)
+	}
+}

@@ -59,10 +59,8 @@ func StockCounts(w *world.World, npc *world.Entity, item *world.Entity) (baseSto
 	if npc == nil || npc.Shop == nil || item == nil {
 		return 0, 0
 	}
-	protoID := string(item.PrototypeID)
-	itemID := string(item.ID)
 	for _, sid := range npc.Shop.Stock {
-		if (protoID != "" && sid == protoID) || sid == itemID || item.HasKeyword(sid) {
+		if listedAs(item, sid) {
 			baseStock++
 		}
 	}
@@ -74,6 +72,27 @@ func StockCounts(w *world.World, npc *world.Entity, item *world.Entity) (baseSto
 		}
 	}
 	return baseStock, currentStock
+}
+
+// listedAs reports whether a stock id names this good by prototype, instance id,
+// or an exact keyword. A name or short that merely contains the id does not count.
+func listedAs(item *world.Entity, sid string) bool {
+	sid = strings.TrimSpace(sid)
+	if item == nil || sid == "" {
+		return false
+	}
+	if item.PrototypeID != "" && strings.EqualFold(string(item.PrototypeID), sid) {
+		return true
+	}
+	if strings.EqualFold(string(item.ID), sid) {
+		return true
+	}
+	for _, k := range item.Keywords {
+		if strings.EqualFold(k, sid) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesItem(a, b *world.Entity) bool {

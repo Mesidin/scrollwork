@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"sudengine/internal/world"
 )
 
 func TestLoadOldHouse(t *testing.T) {
@@ -49,6 +51,30 @@ func TestValidateCatchesBadExit(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	if !strings.Contains(err.Error(), "nowhere") {
+		t.Fatal(err)
+	}
+}
+
+func TestShopStockAllowsNPC(t *testing.T) {
+	p := Blank("t", t.TempDir())
+	p.Items = []ItemYAML{{ID: "lead", Name: "a lead"}}
+	p.NPCs = []NPCYAML{
+		{
+			ID:   "trainer",
+			Name: "trainer",
+			Shop: &world.Shop{Currency: "hp", Stock: []string{"puppy", "lead", "missing"}},
+		},
+		{ID: "puppy", Name: "puppy"},
+	}
+	err := p.Validate()
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatal(err)
+	}
+	if strings.Contains(err.Error(), "puppy") || strings.Contains(err.Error(), "lead") {
+		t.Fatalf("known stock was rejected: %v", err)
+	}
+	p.NPCs[0].Shop.Stock = []string{"puppy", "lead"}
+	if err := p.Validate(); err != nil {
 		t.Fatal(err)
 	}
 }

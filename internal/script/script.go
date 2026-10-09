@@ -597,26 +597,10 @@ func (h *Host) lookup(token string, prefer world.ID) *world.Entity {
 	} else if errors.Is(err, world.ErrAmbiguous) {
 		return nil
 	}
-	return h.findEntity(token)
-}
-
-func (h *Host) findEntity(token string) *world.Entity {
-	if h.World == nil || strings.TrimSpace(token) == "" {
-		return nil
-	}
-	if e := h.World.Get(world.ID(token)); e != nil {
+	if e, err := h.World.ResolveNonMobile(token, prefer); err == nil {
 		return e
 	}
-	var hit *world.Entity
-	for _, e := range h.World.Entities {
-		if e.HasKeyword(token) {
-			hit = e
-			if e.Kind == world.KindMobile {
-				return e
-			}
-		}
-	}
-	return hit
+	return nil
 }
 
 func entityTable(L *lua.LState, e *world.Entity) lua.LValue {

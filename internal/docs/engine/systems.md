@@ -156,14 +156,14 @@ Packs list recipes in `recipes.yaml` (a bare list, or a `recipes:` list). Each r
 - `requires` (ingredient prototype ids and counts; worn items are not consumed; an omitted count means 1)
 - `produces` (an item id, or `{item, count}`)
 - `discovered` (optional boolean, defaults to true). When false, the recipe is locked until it is taught or learned.
-- `discovery` (optional method: `grant`, `buy`, `discover`, or `all`). `all` starts unlocked; `grant`, `buy`, or `discover` locks the recipe and records the learning method on the character.
+- `discovery` (optional method: `grant`, `buy`, `discover`, or `all`). `all` starts unlocked. `grant`, `buy`, or `discover` lock the recipe. The character stores that method when they learn it.
 - `skill` (optional check in `rpg.yaml`). A set `difficulty` replaces the check's difficulty. A failed roll ruins one ingredient. A success at least 3 above the target that was rolled produces a superior item with bonus durability.
 - `min_skill` (optional minimum trained rank in the named skill). The parent attribute does not count.
 
 Learning recipes:
 - **Taught by NPCs**: `NPCYAML.teach_recipes` maps dialogue topics to recipe IDs (recorded as `grant`).
 - **Quest Rewards**: Quests award recipes upon turn-in (recorded as `grant`).
-- **Learned from Items**: Items with `use.learn_recipe: "<id>"` teach the recipe when `use` is performed (recorded as `discover` or the recipe's declared method).
+- **Read from a manual**: An item with `use.learn_recipe: "<id>"` teaches the recipe when the character uses it. The stored method is the recipe's `discovery` when that is `grant`, `buy`, or `discover`. Otherwise the method is `discover`. Carrying the manual, or buying the item the recipe produces, does not teach it.
 - **Lua Scripts**: Scripts can call `learn_recipe("id", [actor], [method])` and check `get_recipe_method("id", [actor])`.
 
 Commands:

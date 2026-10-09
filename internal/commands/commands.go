@@ -1306,6 +1306,11 @@ func buy(c *Context, p Parsed) {
 	}
 	c.Actor.AdjustRes(cur, -price)
 	if item.Kind == world.KindMobile || item.Companion || item.HasFlag("pet") {
+		if err := c.World.StartFollowing(item, c.Actor); err != nil {
+			c.Actor.AdjustRes(cur, price)
+			c.Print("%s", err.Error())
+			return
+		}
 		room := c.World.RoomOf(c.Actor)
 		if room != nil && item.Parent != room.ID {
 			_ = c.World.Move(item.ID, room.ID)
@@ -1313,16 +1318,18 @@ func buy(c *Context, p Parsed) {
 		item.Kind = world.KindMobile
 		item.Companion = true
 		item.Owner = c.Actor.ID
-		if item.Loyalty <= 0 {
-			item.Loyalty = 100
-		}
 		if item.MaxLoyalty <= 0 {
 			item.MaxLoyalty = 100
+		}
+		if item.Loyalty <= 0 {
+			item.Loyalty = item.MaxLoyalty
+		}
+		if item.Loyalty > item.MaxLoyalty {
+			item.Loyalty = item.MaxLoyalty
 		}
 		if item.Stance == "" {
 			item.Stance = "assist"
 		}
-		_ = c.World.StartFollowing(item, c.Actor)
 		world.BreakFight(item, c.Actor)
 		economy.VendorReceive(npc, price)
 		c.Print("You buy %s for %d %s. %s is now following you!", item.Display(), price, c.Pack.Lexicon.Label(cur), item.CapDisplay())
@@ -1481,26 +1488,31 @@ func ask(c *Context, p Parsed) {
 		}
 	}
 	if npc.Topics != nil {
-		if resp, ok := npc.Topics[strings.ToLower(topic)]; ok {
+		topicLower := strings.ToLower(topic)
+		if resp, ok := npc.Topics[topicLower]; ok {
 			c.Say("%s says, \"%s\"", npc.CapDisplay(), resp)
-			teachIfAny(topic)
-			checkQuestTalk(topic)
+			teachIfAny(topicLower)
+			checkQuestTalk(topicLower)
 			return
 		}
-		for k, resp := range npc.Topics {
-			if strings.Contains(strings.ToLower(topic), k) || strings.Contains(k, strings.ToLower(topic)) {
-				c.Say("%s says, \"%s\"", npc.CapDisplay(), resp)
-				checkQuestTalk(k)
-				return
+		var hits []string
+		for k := range npc.Topics {
+			lk := strings.ToLower(k)
+			if strings.Contains(topicLower, lk) || strings.Contains(lk, topicLower) {
+				hits = append(hits, k)
 			}
 		}
-	}
-	if c.Pack != nil && len(c.Pack.Quests) > 0 {
-		notices := quest.UpdateTalk(c.Actor, npc, topic, c.Pack.Quests, c.World)
-		if len(notices) > 0 {
-			for _, n := range notices {
-				c.Alert("%s", n.String())
-			}
+		sort.Strings(hits)
+		switch len(hits) {
+		case 0:
+		case 1:
+			k := hits[0]
+			c.Say("%s says, \"%s\"", npc.CapDisplay(), npc.Topics[k])
+			teachIfAny(k)
+			checkQuestTalk(k)
+			return
+		default:
+			c.Print("%s isn't sure which you mean: %s.", npc.CapDisplay(), strings.Join(hits, ", "))
 			return
 		}
 	}
@@ -3243,9 +3255,11 @@ func inviteTarget(c *Context, name string) {
 		c.Print("Only the party leader can invite new members.")
 		return
 	}
+	madeLeader := false
 	if leaderID == "" {
 		c.Actor.PartyLeader = c.Actor.ID
 		leaderID = c.Actor.ID
+		madeLeader = true
 	}
 
 	if target.PartyLeader == leaderID {
@@ -3254,8 +3268,14 @@ func inviteTarget(c *Context, name string) {
 	}
 
 	if target.Companion || target.Owner == c.Actor.ID {
+		if err := c.World.StartFollowing(target, c.Actor); err != nil {
+			if madeLeader {
+				c.Actor.PartyLeader = ""
+			}
+			c.Print("%s", err.Error())
+			return
+		}
 		target.PartyLeader = leaderID
-		_ = c.World.StartFollowing(target, c.Actor)
 		c.Print("%s joins your party!", target.Display())
 		return
 	}
@@ -3268,8 +3288,14 @@ func inviteTarget(c *Context, name string) {
 	}
 
 	if target.HasFlag("party_member") || target.HasFlag("companion") || target.HasFlag("follower") {
+		if err := c.World.StartFollowing(target, c.Actor); err != nil {
+			if madeLeader {
+				c.Actor.PartyLeader = ""
+			}
+			c.Print("%s", err.Error())
+			return
+		}
 		target.PartyLeader = leaderID
-		_ = c.World.StartFollowing(target, c.Actor)
 		c.Print("%s accepts your invitation and joins your party!", target.Display())
 		return
 	}
@@ -3593,6 +3619,10 @@ func orderCmd(c *Context, p Parsed) {
 
 	case "dismiss":
 		c.World.StopFollowing(pet)
+		if c.Actor.Leader == pet.ID {
+			c.World.StopFollowing(c.Actor)
+		}
+		c.World.ClearParty(pet.ID)
 		if pet.PartyLeader == c.Actor.PartyLeader || pet.PartyLeader == c.Actor.ID {
 			pet.PartyLeader = ""
 		}

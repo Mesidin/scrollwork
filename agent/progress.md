@@ -4,11 +4,11 @@ This document records the chronological development history, verified features, 
 
 ---
 
-## Current Status (as of Oct 8, 2026)
+## Current Status (as of Oct 9, 2026)
 
 * **Engine**: Go 1.22+ Bubble Tea MUD engine with runtime YAML+Lua pack loading.
-* **Test Suite**: `go test -count=1 ./...` passing 100% across all packages.
-* **Working Tree**: Followers, parties, and pet companions, including the review fixes for tame AI, assists, shops, parties, kill credit, and movement.
+* **Test Suite**: `go test ./...` passing across all packages.
+* **Working Tree**: Price curves, recipe discovery, followers, and the Oct 9 review fixes for stock identity, shop NPCs, ask/talk, follow failures, loyalty, dismiss, and script lookup.
 * **Sample Packs**:
   * `games/old-house`: Core story regression pack.
   * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, economy, quests, and companion interactions.
@@ -276,3 +276,12 @@ This document records the chronological development history, verified features, 
   * OLC builder tests in `internal/olc/olc_test.go` (`TestMsetBuilder`, `TestRecipeBuilder`).
   * Server integration test in `internal/server/economy_test.go` (`TestPriceCurveServerIntegration`).
   * Documentation updated in `internal/docs/engine/building.md`, `internal/docs/engine/systems.md`, `AGENTS.md`, and `agent/roadmap.md`.
+* **Review fixes (Oct 9, 2026)**:
+  * Shop stock counts match a prototype id, an instance id, or an exact keyword. A name that merely contains the stock id, such as "earring" against `ring`, does not make the good look scarce.
+  * `shop.stock` may name an item or an NPC. A missing id still fails validation.
+  * `ask` teaches a recipe and completes a talk objective only after one real reply. Several topic matches are ambiguous and do not teach or advance the quest. An unanswered question does not count as talking to that NPC.
+  * Buying or inviting a mobile refunds the purchase, or leaves the party unchanged, when `StartFollowing` would make a loop.
+  * A purchased companion with unset loyalty fills to `max_loyalty` when that is already set, and never stays above the max.
+  * `order dismiss` also releases the player when the player is following that pet, and clears a party link that points at the pet.
+  * Script lookup returns nothing when several mobiles or several other bodies match. It does not walk the entity map and edit the last hit.
+  * `discovery: buy` is the method stored when the character reads that recipe's manual (`use`). Carrying the manual, or buying the finished good, does not teach it.
