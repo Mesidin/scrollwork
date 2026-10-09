@@ -133,6 +133,11 @@ NPCs with `repairer: true` (or the `repairer` / `blacksmith` flag) mend gear for
 ### Merchant Purses & Commerce
 `shop.purse` (including 0), `shop.max_purse`, or `shop.dynamic: true` makes the till finite, and it stays finite after the balance hits zero.
 Merchants buy only what the till can cover. Buying from them refills the till, up to `max_purse` when that is set.
+`shop.price_curve: true` enables floating supply-and-demand price curves:
+- Price scales based on base stock versus current vendor stock:
+  $$\text{Effective Price} = \text{Base Price} \times \left(1 + \frac{\text{Base Stock} - \text{Current Stock}}{\text{Base Stock} + 5}\right)$$
+- Rare or bought-out goods become more expensive.
+- Flooding a merchant with surplus items drops their buy-price down to nominal scrap value (1 coin).
 Damaged goods sell for value scaled by remaining durability. An item with nothing left does not sell.
 A pile resource, such as coin, can grow past its starting amount.
 
@@ -150,14 +155,16 @@ Packs list recipes in `recipes.yaml` (a bare list, or a `recipes:` list). Each r
 - `tools` (carried or worn items required to craft, not consumed)
 - `requires` (ingredient prototype ids and counts; worn items are not consumed; an omitted count means 1)
 - `produces` (an item id, or `{item, count}`)
-- `discovered` (optional boolean, defaults to true). When false, the recipe is locked until it is taught or learned with `use`.
+- `discovered` (optional boolean, defaults to true). When false, the recipe is locked until it is taught or learned.
+- `discovery` (optional method: `grant`, `buy`, `discover`, or `all`). `all` starts unlocked; `grant`, `buy`, or `discover` locks the recipe and records the learning method on the character.
 - `skill` (optional check in `rpg.yaml`). A set `difficulty` replaces the check's difficulty. A failed roll ruins one ingredient. A success at least 3 above the target that was rolled produces a superior item with bonus durability.
 - `min_skill` (optional minimum trained rank in the named skill). The parent attribute does not count.
 
 Learning recipes:
-- **Taught by NPCs**: `NPCYAML.teach_recipes` maps dialogue topics to recipe IDs.
-- **Learned from Items**: Items with `use.learn_recipe: "<id>"` teach the recipe when `use` is performed.
-- **Lua Scripts**: Scripts can call `learn_recipe("id")`.
+- **Taught by NPCs**: `NPCYAML.teach_recipes` maps dialogue topics to recipe IDs (recorded as `grant`).
+- **Quest Rewards**: Quests award recipes upon turn-in (recorded as `grant`).
+- **Learned from Items**: Items with `use.learn_recipe: "<id>"` teach the recipe when `use` is performed (recorded as `discover` or the recipe's declared method).
+- **Lua Scripts**: Scripts can call `learn_recipe("id", [actor], [method])` and check `get_recipe_method("id", [actor])`.
 
 Commands:
 - `recipes` (alias `rlist`) lists only your known recipes and marks whether station, tools, and materials are on hand.

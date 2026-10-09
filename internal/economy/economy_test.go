@@ -1,6 +1,7 @@
 package economy
 
 import (
+	"fmt"
 	"math/rand"
 	"testing"
 
@@ -331,4 +332,120 @@ func craftBench() (*world.World, *world.Entity) {
 	}
 	w.Protos[sword.ID] = sword
 	return w, player
+}
+
+func TestPriceCurveCalculations(t *testing.T) {
+	// Formula: Effective Price = Base Price * (1 + (Base Stock - Current Stock) / (Base Stock + 5))
+	// 1. Base stock 5, Current stock 5 -> multiplier 1.0 -> price 20
+	if p := ScalePrice(20, 5, 5); p != 20 {
+		t.Fatalf("expected price 20 at equal stock, got %d", p)
+	}
+
+	// 2. Base stock 5, Current stock 0 (rare, bought out) -> multiplier 1 + 5/10 = 1.5 -> price 30
+	if p := ScalePrice(20, 5, 0); p != 30 {
+		t.Fatalf("expected price 30 for bought out rare goods, got %d", p)
+	}
+
+	// 3. Flooding vendor: Base stock 0, Current stock 15 -> multiplier drops negative -> clamped to nominal scrap value (1)
+	if p := ScalePrice(10, 0, 15); p != 1 {
+		t.Fatalf("expected nominal scrap value 1 for flooded inventory, got %d", p)
+	}
+
+	// 4. Base stock 2, Current stock 1 -> 14 * (1 + 1/7) = 16
+	if p := ScalePrice(14, 2, 1); p != 16 {
+		t.Fatalf("expected scaled price 16, got %d", p)
+	}
+
+	// Vendor buy and sell integration with PriceCurve
+	w := world.New()
+	vendor := &world.Entity{
+		ID:   "vendor",
+		Kind: world.KindMobile,
+		Shop: &world.Shop{
+			Currency:   "coin",
+			PriceCurve: true,
+			Stock:      []string{"proto.dagger", "proto.dagger"}, // Base stock = 2
+		},
+	}
+	dagger1 := &world.Entity{ID: "d1", PrototypeID: "proto.dagger", Value: 10}
+	dagger2 := &world.Entity{ID: "d2", PrototypeID: "proto.dagger", Value: 10}
+	w.Add(vendor)
+	w.Add(dagger1)
+	w.Add(dagger2)
+	_ = w.Move(dagger1.ID, vendor.ID)
+	_ = w.Move(dagger2.ID, vendor.ID)
+
+	// Current stock = 2, Base stock = 2 -> Buy price should be 10
+	if bp := BuyPrice(vendor, dagger1, w); bp != 10 {
+		t.Fatalf("expected base buy price 10, got %d", bp)
+	}
+
+	// Remove one dagger -> Current stock = 1 -> price increases
+	w.Detach(dagger2.ID)
+	// Base stock 2, Current stock 1 -> 10 * (1 + 1/7) = 11
+	if bp := BuyPrice(vendor, dagger1, w); bp != 11 {
+		t.Fatalf("expected increased buy price 11, got %d", bp)
+	}
+
+	// Sell price check with PriceCurve:
+	// If vendor has 0 base stock and current stock is flooded to 15, selling pays 1
+	daggers := []*world.Entity{}
+	for i := 0; i < 15; i++ {
+		d := &world.Entity{ID: world.ID(fmt.Sprintf("d_flood_%d", i)), PrototypeID: "proto.sword", Value: 20}
+		w.Add(d)
+		_ = w.Move(d.ID, vendor.ID)
+		daggers = append(daggers, d)
+	}
+	swordToSell := &world.Entity{ID: "sell_sword", PrototypeID: "proto.sword", Value: 20}
+	if sp := SellPrice(swordToSell, vendor, w); sp != 1 {
+		t.Fatalf("expected flooded sell price 1, got %d", sp)
+	}
+}
+
+func TestRecipeDiscoveryMethods(t *testing.T) {
+	rAll := Recipe{ID: "torch", Discovery: "all"}
+	rGrant := Recipe{ID: "cudgel", Discovery: "grant"}
+	rBuy := Recipe{ID: "potion", Discovery: "buy"}
+	rDiscover := Recipe{ID: "lockpick", Discovery: "discover"}
+
+	player := &world.Entity{ID: "hero", Kind: world.KindPlayer}
+
+	// 1. "all" is known by default
+	if !rAll.IsKnown(player) {
+		t.Fatalf("recipe with discovery: all should be known by default")
+	}
+
+	// 2. "grant", "buy", "discover" are locked by default
+	if rGrant.IsKnown(player) || rBuy.IsKnown(player) || rDiscover.IsKnown(player) {
+		t.Fatalf("locked recipes should not be known by default")
+	}
+
+	// 3. Learn with methods and verify RecipeMethod
+	if !player.LearnRecipe("cudgel", "grant") {
+		t.Fatalf("LearnRecipe should return true for unlearned recipe")
+	}
+	if player.RecipeMethod("cudgel") != "grant" {
+		t.Fatalf("expected method grant, got %s", player.RecipeMethod("cudgel"))
+	}
+	if !rGrant.IsKnown(player) {
+		t.Fatalf("cudgel should now be known")
+	}
+
+	player.LearnRecipe("potion", "buy")
+	if player.RecipeMethod("potion") != "buy" {
+		t.Fatalf("expected method buy, got %s", player.RecipeMethod("potion"))
+	}
+
+	player.LearnRecipe("lockpick", "discover")
+	if player.RecipeMethod("lockpick") != "discover" {
+		t.Fatalf("expected method discover, got %s", player.RecipeMethod("lockpick"))
+	}
+
+	// 4. Learning duplicate returns false and preserves method
+	if player.LearnRecipe("cudgel", "buy") {
+		t.Fatalf("learning already known recipe should return false")
+	}
+	if player.RecipeMethod("cudgel") != "grant" {
+		t.Fatalf("existing method should be preserved, got %s", player.RecipeMethod("cudgel"))
+	}
 }

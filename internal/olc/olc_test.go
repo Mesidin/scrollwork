@@ -177,6 +177,14 @@ func TestMsetBuilder(t *testing.T) {
 	if bram.Shop.Dynamic || !bram.Shop.Finite || bram.Shop.Purse != 100 {
 		t.Fatalf("dynamic off should keep the purse finite, got %+v", bram.Shop)
 	}
+	Lookup("mset")(c, parse("mset bram shop curve on"))
+	if !bram.Shop.PriceCurve {
+		t.Fatalf("expected price curve enabled")
+	}
+	Lookup("mset")(c, parse("mset bram shop curve off"))
+	if bram.Shop.PriceCurve {
+		t.Fatalf("expected price curve disabled")
+	}
 
 	// 5. Set Topic and Teach Recipe
 	Lookup("mset")(c, parse("mset bram topic training Train hard every day."))
@@ -327,8 +335,8 @@ func TestRecipeBuilder(t *testing.T) {
 	locked := false
 	p.Recipes[0].Discovered = &locked
 	Lookup("recipe")(c, parse("recipe add craft_dagger item.spear disc grant"))
-	if p.Recipes[0].Discovered == nil || *p.Recipes[0].Discovered || p.Recipes[0].Produces != "item.spear" {
-		t.Fatalf("disc grant should not change the recipe, got %+v", p.Recipes[0])
+	if p.Recipes[0].Discovered == nil || *p.Recipes[0].Discovered || p.Recipes[0].Produces != "item.spear" || p.Recipes[0].Discovery != "grant" {
+		t.Fatalf("disc grant should lock the recipe and set discovery method, got %+v", p.Recipes[0])
 	}
 	Lookup("recipe")(c, parse("recipe add craft_dagger item.dagger disc off"))
 	if p.Recipes[0].Discovered == nil || *p.Recipes[0].Discovered || p.Recipes[0].Produces != "item.dagger" || p.Recipes[0].Station != "anvil" {

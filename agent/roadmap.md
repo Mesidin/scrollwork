@@ -48,7 +48,8 @@ Status Legend:
   * [x] Salvage & deconstruction (`salvage` / `breakdown` items into components).
   * [x] Field survival repair kits (`repair_kit` schema, `repair <item> with <kit>`, `use <kit> on <item>`).
   * [x] Dynamic mob respawning (`respawn_every` tick heartbeat).
-  * [ ] Price curves, and discovery methods stored as `grant` / `buy` / `discover`. `disc` is only on or off. Superior craft is the durability bonus on a high roll.
+  * [x] Supply-and-demand price curves (`shop.price_curve: true`, `ScalePrice` floating curves based on stock).
+  * [x] Storing and persisting recipe discovery methods (`grant`, `buy`, `discover`, `all` in `Recipe.Discovery` and `Entity.RecipeMethods`).
 
 ---
 

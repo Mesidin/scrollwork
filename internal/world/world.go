@@ -104,10 +104,11 @@ type Shop struct {
 	Markup   int    `json:"markup,omitempty" yaml:"markup,omitempty"`
 	Purse    int    `json:"purse,omitempty" yaml:"purse,omitempty"`
 	MaxPurse int    `json:"max_purse,omitempty" yaml:"max_purse,omitempty"`
-	Dynamic  bool   `json:"dynamic,omitempty" yaml:"dynamic,omitempty"`
+	Dynamic    bool     `json:"dynamic,omitempty" yaml:"dynamic,omitempty"`
+	PriceCurve bool     `json:"price_curve,omitempty" yaml:"price_curve,omitempty"`
 	// Finite stays set when the balance hits zero. A missing purse is an unlimited buyer.
-	Finite bool     `json:"finite,omitempty" yaml:"finite,omitempty"`
-	Stock  []string `json:"stock,omitempty" yaml:"stock,omitempty"`
+	Finite     bool     `json:"finite,omitempty" yaml:"finite,omitempty"`
+	Stock      []string `json:"stock,omitempty" yaml:"stock,omitempty"`
 }
 
 // UnmarshalYAML marks a till finite when the pack sets purse or max_purse, including 0.
@@ -225,8 +226,9 @@ type Entity struct {
 	Banker      bool `json:"banker,omitempty" yaml:"banker,omitempty"`
 
 	Bank         map[string]int         `json:"bank,omitempty" yaml:"bank,omitempty"`
-	Recipes      []string               `json:"recipes,omitempty" yaml:"recipes,omitempty"`
-	TeachRecipes map[string]string      `json:"teach_recipes,omitempty" yaml:"teach_recipes,omitempty"`
+	Recipes       []string               `json:"recipes,omitempty" yaml:"recipes,omitempty"`
+	RecipeMethods map[string]string      `json:"recipe_methods,omitempty" yaml:"recipe_methods,omitempty"`
+	TeachRecipes  map[string]string      `json:"teach_recipes,omitempty" yaml:"teach_recipes,omitempty"`
 	Gather       *GatherNode            `json:"gather,omitempty" yaml:"gather,omitempty"`
 	Quests       map[string]*QuestState `json:"quests,omitempty" yaml:"quests,omitempty"`
 	Loot         []LootDrop             `json:"loot,omitempty" yaml:"loot,omitempty"`
@@ -554,6 +556,12 @@ func (e *Entity) Clone() *Entity {
 	if e.Recipes != nil {
 		cp.Recipes = append([]string{}, e.Recipes...)
 	}
+	if e.RecipeMethods != nil {
+		cp.RecipeMethods = make(map[string]string, len(e.RecipeMethods))
+		for k, v := range e.RecipeMethods {
+			cp.RecipeMethods[k] = v
+		}
+	}
 	if e.TeachRecipes != nil {
 		cp.TeachRecipes = make(map[string]string, len(e.TeachRecipes))
 		for k, v := range e.TeachRecipes {
@@ -613,14 +621,37 @@ func (e *Entity) KnowsRecipe(id string) bool {
 	return false
 }
 
-func (e *Entity) LearnRecipe(id string) bool {
+// RecipeMethod returns how a recipe was learned (e.g. "grant", "buy", "discover").
+func (e *Entity) RecipeMethod(id string) string {
+	if e == nil || e.RecipeMethods == nil {
+		return ""
+	}
+	normID := strings.ToLower(strings.TrimSpace(id))
+	return e.RecipeMethods[normID]
+}
+
+// LearnRecipe marks a recipe as known by the entity, storing the method.
+// If method is omitted or empty, it defaults to "discover".
+func (e *Entity) LearnRecipe(id string, method ...string) bool {
 	if e == nil || id == "" {
 		return false
 	}
-	if e.KnowsRecipe(id) {
+	normID := strings.ToLower(strings.TrimSpace(id))
+	m := "discover"
+	if len(method) > 0 && method[0] != "" {
+		m = strings.ToLower(strings.TrimSpace(method[0]))
+	}
+	if e.RecipeMethods == nil {
+		e.RecipeMethods = map[string]string{}
+	}
+	if e.KnowsRecipe(normID) {
+		if e.RecipeMethods[normID] == "" {
+			e.RecipeMethods[normID] = m
+		}
 		return false
 	}
 	e.Recipes = append(e.Recipes, id)
+	e.RecipeMethods[normID] = m
 	return true
 }
 

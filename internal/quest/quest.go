@@ -267,7 +267,7 @@ func Complete(actor *world.Entity, w *world.World, q Quest, now int64) error {
 		}
 	}
 	for _, recID := range q.Rewards.Recipes {
-		actor.LearnRecipe(recID)
+		actor.LearnRecipe(recID, "grant")
 	}
 
 	// Update status

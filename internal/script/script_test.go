@@ -308,6 +308,54 @@ end
 	}
 }
 
+func TestLuaLearnRecipeMethod(t *testing.T) {
+	w := world.New()
+	room := &world.Entity{ID: "room", Kind: world.KindRoom}
+	actor := &world.Entity{ID: "player", Kind: world.KindPlayer, Name: "Hero"}
+	npc := &world.Entity{ID: "sage", Kind: world.KindMobile, Name: "sage", Scripts: "sage.lua"}
+	w.Add(room)
+	w.Add(actor)
+	w.Add(npc)
+	_ = w.Move(actor.ID, room.ID)
+	_ = w.Move(npc.ID, room.ID)
+
+	sageLua := `
+function on_ask(actor, self, topic)
+    if topic == "alchemy" then
+        learn_recipe("brew_heal", actor, "grant")
+        assert(get_recipe_method("brew_heal", actor) == "grant")
+        return true
+    elseif topic == "trade" then
+        learn_recipe("iron_dagger", actor, "buy")
+        assert(get_recipe_method("iron_dagger", actor) == "buy")
+        return true
+    end
+    return false
+end
+`
+	h := New(map[string]string{
+		"sage.lua": sageLua,
+	})
+	h.World = w
+
+	ok, err := h.Call("on_ask", actor, npc, "alchemy")
+	if err != nil || !ok {
+		t.Fatalf("alchemy on_ask failed: %v", err)
+	}
+	if !actor.KnowsRecipe("brew_heal") || actor.RecipeMethod("brew_heal") != "grant" {
+		t.Fatalf("expected brew_heal granted, got method %s", actor.RecipeMethod("brew_heal"))
+	}
+
+	ok, err = h.Call("on_ask", actor, npc, "trade")
+	if err != nil || !ok {
+		t.Fatalf("trade on_ask failed: %v", err)
+	}
+	if !actor.KnowsRecipe("iron_dagger") || actor.RecipeMethod("iron_dagger") != "buy" {
+		t.Fatalf("expected iron_dagger bought, got method %s", actor.RecipeMethod("iron_dagger"))
+	}
+}
+
+
 func TestLuaLeaderLeaveAndJoinReleasesMembers(t *testing.T) {
 	w := world.New()
 	room := &world.Entity{ID: "room", Kind: world.KindRoom}

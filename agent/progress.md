@@ -251,8 +251,28 @@ This document records the chronological development history, verified features, 
   * A party leader who joins another party disbands the old one. `PartyMembers` ignores a leader who has already left. Lua `leave_party` on a leader clears every member.
   * Kill credit is snapshotted before corpses are destroyed, so a companion who dies on the same tick still counts.
   * Follower moves share `World.PullFollowers`. A following player gets a normal room entry. Script teleports, pursuit, and quest relocation pull followers in the departure room. Death brings owned companions to the start; `stay` companions are left behind.
-  * `follow` checks the mobile's own aggro flags. `order` is limited to a pet you own. `feed` ignores untameable mobiles and substring food names. `order follow` restores the stance from before `stay`. Party vitals use the pack's primary resource.
-
-
-
-
+### Milestone 12: Supply-and-Demand Price Curves & Recipe Discovery Methods (Oct 9, 2026)
+* **Floating Supply-and-Demand Price Curves**:
+  * Added `PriceCurve bool` to `world.Shop` (`shop.price_curve: true` in YAML/JSON).
+  * Implemented `StockCounts` and `ScalePrice` in `internal/economy/shop.go` using the floating curve formula:
+    $$\text{Effective Price} = \text{Base Price} \times \left(1 + \frac{\text{Base Stock} - \text{Current Stock}}{\text{Base Stock} + 5}\right)$$
+  * Supported inventory scarcity scaling (rare or bought-out goods increase in price) and surplus flooding (flooding vendor inventory drops buy-price to nominal scrap value of 1 coin).
+  * Updated `BuyPrice` and `SellPrice` to dynamically scale based on stock when `PriceCurve` is enabled on the merchant.
+  * Buying from vendor stock matches identical items without false "Which one?" prompt.
+  * OLC: `mset <mob> shop curve <on|off>` and display in `mset <mob> show`.
+* **Recipe Discovery Methods & Persistence**:
+  * Extended `economy.Recipe` with `Discovery` method (`grant`, `buy`, `discover`, `all`), while preserving backwards compatibility with boolean `discovered`.
+  * Extended `world.Entity` with `RecipeMethods map[string]string` and methods `LearnRecipe(id, method ...string)` and `RecipeMethod(id)`.
+  * Integration across learning channels:
+    * NPC dialogue (`teach_recipes`): recorded as `grant`.
+    * Quest rewards (`rewards.recipes`): recorded as `grant`.
+    * Item use (`use.learn_recipe`): recorded as `discover` (or from recipe's declared `Discovery`).
+    * Lua sandbox: `learn_recipe(recipeID, [actor], [method])` and `get_recipe_method(recipeID, [actor])`.
+  * OLC: `recipe add <id> ... [disc <grant|buy|discover|all|on|off>]` and `recipe show <id>` displaying discovery method.
+  * Player `recipes` command displays learned method tags.
+* **Testing & Documentation**:
+  * Unit tests in `internal/economy/economy_test.go` (`TestPriceCurveCalculations`, `TestRecipeDiscoveryMethods`).
+  * Unit tests in `internal/script/script_test.go` (`TestLuaLearnRecipeMethod`).
+  * OLC builder tests in `internal/olc/olc_test.go` (`TestMsetBuilder`, `TestRecipeBuilder`).
+  * Server integration test in `internal/server/economy_test.go` (`TestPriceCurveServerIntegration`).
+  * Documentation updated in `internal/docs/engine/building.md`, `internal/docs/engine/systems.md`, `AGENTS.md`, and `agent/roadmap.md`.

@@ -377,7 +377,7 @@ func mset(c *commands.Context, p commands.Parsed) {
 
 	case "shop":
 		if len(args) == 0 {
-			c.Print("mset %s shop currency|purse|maxpurse|dynamic|clear", mob.Display())
+			c.Print("mset %s shop currency|purse|maxpurse|dynamic|curve|clear", mob.Display())
 			return
 		}
 		sub := strings.ToLower(args[0])
@@ -439,8 +439,21 @@ func mset(c *commands.Context, p commands.Parsed) {
 			}
 			syncMobProto(c, mob)
 			c.Tell(protocol.ChanBuild, fmt.Sprintf("%s shop dynamic = %v", mob.Display(), val))
+		case "curve", "price_curve":
+			val := true
+			if len(args) >= 2 {
+				val = parseBool(args[1], true)
+			} else if mob.Shop != nil {
+				val = !mob.Shop.PriceCurve
+			}
+			if mob.Shop == nil {
+				mob.Shop = &world.Shop{Currency: "coin", Dynamic: true, Finite: true}
+			}
+			mob.Shop.PriceCurve = val
+			syncMobProto(c, mob)
+			c.Tell(protocol.ChanBuild, fmt.Sprintf("%s shop price_curve = %v", mob.Display(), val))
 		default:
-			c.Print("Shop subcommands: currency, purse, maxpurse, dynamic, clear")
+			c.Print("Shop subcommands: currency, purse, maxpurse, dynamic, curve, clear")
 		}
 
 	case "topic":
@@ -567,7 +580,7 @@ func showMob(c *commands.Context, mob *world.Entity) {
 	c.Print("XP: %d | Respawn Every: %d ticks", mob.XP, mob.RespawnEvery)
 	c.Print("Services: trainer=%v, repairer=%v, banker=%v", mob.Trainer, mob.Repairer, mob.Banker)
 	if mob.Shop != nil {
-		c.Print("Shop: currency=%s, purse=%d, max_purse=%d, dynamic=%v", mob.Shop.Currency, mob.Shop.Purse, mob.Shop.MaxPurse, mob.Shop.Dynamic)
+		c.Print("Shop: currency=%s, purse=%d, max_purse=%d, dynamic=%v, price_curve=%v", mob.Shop.Currency, mob.Shop.Purse, mob.Shop.MaxPurse, mob.Shop.Dynamic, mob.Shop.PriceCurve)
 	} else {
 		c.Print("Shop: (none)")
 	}
@@ -1480,7 +1493,13 @@ func recipeCmd(c *commands.Context, p commands.Parsed) {
 		if found.Discovered != nil {
 			disc = *found.Discovered
 		}
-		c.Print("  Discovered by default: %v", disc)
+		method := "all"
+		if found.Discovery != "" {
+			method = found.Discovery
+		} else if !disc {
+			method = "discover"
+		}
+		c.Print("  Discovered by default: %v (method: %s)", disc, method)
 		if len(found.Requires) > 0 {
 			c.Print("  Ingredients:")
 			for _, req := range found.Requires {
@@ -1561,6 +1580,7 @@ func recipeCmd(c *commands.Context, p commands.Parsed) {
 		dc := 7
 		minSkill := 0
 		disc := true
+		discMethod := ""
 		nameSet, stationSet, skillSet, dcSet, minSet, discSet := false, false, false, false, false, false
 
 		args := p.Args[3:]
@@ -1606,18 +1626,25 @@ func recipeCmd(c *commands.Context, p commands.Parsed) {
 				}
 			case "disc", "discovered":
 				if i+1 >= len(args) {
-					c.Print("disc is on or off. Discovery methods are not stored yet.")
+					c.Print("disc options: grant, buy, discover, all, on, off")
 					return
 				}
-				switch strings.ToLower(args[i+1]) {
-				case "on", "true", "1", "yes":
+				val := strings.ToLower(args[i+1])
+				switch val {
+				case "on", "true", "1", "yes", "all":
 					disc = true
 					discSet = true
+					discMethod = "all"
 				case "off", "false", "0", "no":
 					disc = false
 					discSet = true
+					discMethod = "discover"
+				case "grant", "buy", "discover":
+					disc = false
+					discSet = true
+					discMethod = val
 				default:
-					c.Print("disc is on or off. Discovery methods are not stored yet.")
+					c.Print("disc options: grant, buy, discover, all, on, off")
 					return
 				}
 				i++
@@ -1651,6 +1678,7 @@ func recipeCmd(c *commands.Context, p commands.Parsed) {
 			if discSet {
 				b := disc
 				existing.Discovered = &b
+				existing.Discovery = discMethod
 			}
 			c.Tell(protocol.ChanBuild, fmt.Sprintf("Recipe %s updated (produces: %s, station: %s).", existing.ID, existing.Produces, existing.Station))
 			return
@@ -1666,6 +1694,7 @@ func recipeCmd(c *commands.Context, p commands.Parsed) {
 			Difficulty: dc,
 			MinSkill:   minSkill,
 			Discovered: &b,
+			Discovery:  discMethod,
 		})
 		c.Tell(protocol.ChanBuild, fmt.Sprintf("Recipe %s created (produces: %s, station: %s).", id, produces, station))
 

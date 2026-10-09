@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -539,5 +540,104 @@ func TestGreenHollowEconomy(t *testing.T) {
 	}
 	if sword.Durability != sword.MaxDurability {
 		t.Fatalf("expected sword to be repaired to %d, got %d", sword.MaxDurability, sword.Durability)
+	}
+}
+
+func TestPriceCurveServerIntegration(t *testing.T) {
+	srv, sess := newTestServerWithEconomy()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.Run(ctx)
+	time.Sleep(20 * time.Millisecond)
+	drainLines(sess)
+
+	// Configure Goran to use PriceCurve and have base stock of 2 daggers
+	goran := srv.World.Get("npc.blacksmith")
+	goran.Shop.PriceCurve = true
+	goran.Shop.Stock = []string{"item.dagger", "item.dagger"}
+	goran.Shop.Purse = 50
+
+	d1 := &world.Entity{
+		ID:            "dag1",
+		PrototypeID:   "item.dagger",
+		Kind:          world.KindItem,
+		Keywords:      []string{"dagger"},
+		Name:          "an iron dagger",
+		Value:         10,
+		Takeable:      true,
+	}
+	d2 := &world.Entity{
+		ID:            "dag2",
+		PrototypeID:   "item.dagger",
+		Kind:          world.KindItem,
+		Keywords:      []string{"dagger"},
+		Name:          "an iron dagger",
+		Value:         10,
+		Takeable:      true,
+	}
+	srv.World.Add(d1)
+	srv.World.Add(d2)
+	_ = srv.World.Move(d1.ID, goran.ID)
+	_ = srv.World.Move(d2.ID, goran.ID)
+
+	// 1. Initial list: 2 daggers in stock with base stock 2 -> price should be 10 copper
+	sess.In <- "list"
+	time.Sleep(30 * time.Millisecond)
+	lines := drainLines(sess)
+	all := strings.Join(lines, "\n")
+	if !strings.Contains(all, "iron dagger  (10 copper)") {
+		t.Fatalf("expected dagger at 10 copper, got:\n%s", all)
+	}
+
+	// 2. Buy one dagger -> inventory drops to 1, price should rise to 11 copper
+	sess.In <- "buy dagger"
+	time.Sleep(30 * time.Millisecond)
+	lines = drainLines(sess)
+	all = strings.Join(lines, "\n")
+	if !strings.Contains(all, "You buy an iron dagger for 10 copper") {
+		t.Fatalf("expected successful buy for 10 copper, got:\n%s", all)
+	}
+
+	// List again -> price scaled up to 11 copper due to scarcity
+	sess.In <- "list"
+	time.Sleep(30 * time.Millisecond)
+	lines = drainLines(sess)
+	all = strings.Join(lines, "\n")
+	if !strings.Contains(all, "iron dagger  (11 copper)") {
+		t.Fatalf("expected dagger price increased to 11 copper, got:\n%s", all)
+	}
+
+	// 3. Flooding vendor with items drops sell price down to nominal scrap value (1 copper)
+	for i := 0; i < 15; i++ {
+		junk := &world.Entity{
+			ID:          world.ID(fmt.Sprintf("junk_%d", i)),
+			PrototypeID: "item.scrap_blade",
+			Kind:        world.KindItem,
+			Keywords:    []string{"junkblade"},
+			Name:        "a junk blade",
+			Value:       10,
+			Takeable:    true,
+		}
+		srv.World.Add(junk)
+		_ = srv.World.Move(junk.ID, goran.ID)
+	}
+	playerJunk := &world.Entity{
+		ID:          "player_junk",
+		PrototypeID: "item.scrap_blade",
+		Kind:        world.KindItem,
+		Keywords:    []string{"junkblade"},
+		Name:        "a junk blade",
+		Value:       10,
+		Takeable:    true,
+	}
+	srv.World.Add(playerJunk)
+	_ = srv.World.Move(playerJunk.ID, srv.World.PlayerID)
+
+	sess.In <- "sell junkblade"
+	time.Sleep(30 * time.Millisecond)
+	lines = drainLines(sess)
+	all = strings.Join(lines, "\n")
+	if !strings.Contains(all, "You sell a junk blade for 1 copper") {
+		t.Fatalf("expected flooded sell price 1 copper (scrap value), got:\n%s", all)
 	}
 }

@@ -167,15 +167,37 @@ func (h *Host) bind(L *lua.LState, actor, self *world.Entity) {
 	L.SetGlobal("learn_recipe", L.NewFunction(func(L *lua.LState) int {
 		recID := L.ToString(1)
 		target := actor
+		method := "grant"
+		top := L.GetTop()
+		if top >= 2 {
+			if id, ok := tableID(L.Get(2)); ok {
+				target = h.World.Get(world.ID(id))
+			} else if L.Get(2).Type() == lua.LTString {
+				method = L.ToString(2)
+			}
+		}
+		if top >= 3 && L.Get(3).Type() == lua.LTString {
+			method = L.ToString(3)
+		}
+		if target != nil && recID != "" {
+			target.LearnRecipe(recID, method)
+		}
+		return 0
+	}))
+	L.SetGlobal("get_recipe_method", L.NewFunction(func(L *lua.LState) int {
+		recID := L.ToString(1)
+		target := actor
 		if L.GetTop() >= 2 {
 			if id, ok := tableID(L.Get(2)); ok {
 				target = h.World.Get(world.ID(id))
 			}
 		}
 		if target != nil && recID != "" {
-			target.LearnRecipe(recID)
+			L.Push(lua.LString(target.RecipeMethod(recID)))
+			return 1
 		}
-		return 0
+		L.Push(lua.LString(""))
+		return 1
 	}))
 	L.SetGlobal("teleport", L.NewFunction(func(L *lua.LState) int {
 		return h.luaMove(L, actor, self)

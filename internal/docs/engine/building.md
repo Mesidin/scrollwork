@@ -185,7 +185,8 @@ mset <mob> respawn <ticks>            automatic respawn interval (0 = off)
 mset <mob> shop currency <id>         merchant coin currency ID
 mset <mob> shop purse <amount>        merchant active till
 mset <mob> shop maxpurse <amount>     merchant maximum purse capacity
-mset <mob> shop dynamic <on|off>      finite till that refills as players buy; prices stay fixed
+mset <mob> shop dynamic <on|off>      finite till that refills as players buy
+mset <mob> shop curve <on|off>        floating supply-and-demand price curves based on stock
 mset <mob> shop clear                 remove merchant shopkeeper role
 mset <mob> topic <key> <text>         dialogue topic response
 mset <mob> teach <topic> <recipe>     teach crafting recipe on dialogue topic
@@ -235,13 +236,13 @@ Manage the pack's `recipes.yaml` crafting registry:
 ```
 recipe list / rclist                  show all registered crafting recipes
 recipe show <id>                      display recipe requirements, station, DC, and discovery
-recipe add <id> <item> [name <name>] [station <s>] [skill <s>] [dc <n>] [min <n>] [disc on|off]
+recipe add <id> <item> [name <name>] [station <s>] [skill <s>] [dc <n>] [min <n>] [disc <grant|buy|discover|all|on|off>]
                                       create a recipe, or change only the fields you name
 recipe req <id> <item> [count]        add required ingredient to recipe
 recipe del <id>                       delete recipe from pack
 ```
 
-`disc` is on or off. On means the recipe starts known. Off means a player learns it from a quest, a topic, or `use`. Named discovery methods are not stored.
+`disc` sets the discovery method: `all` (or `on`) means the recipe starts known by default. `grant`, `buy`, or `discover` (or `off`) locks the recipe until learned from a quest reward, NPC topic, merchant purchase, or finding a manual.
 
 ## Check your work
 

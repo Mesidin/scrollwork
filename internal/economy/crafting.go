@@ -30,13 +30,20 @@ type Recipe struct {
 	Difficulty int          `json:"difficulty,omitempty" yaml:"difficulty,omitempty"`
 	MinSkill   int          `json:"min_skill,omitempty" yaml:"min_skill,omitempty"`
 	Discovered *bool        `json:"discovered,omitempty" yaml:"discovered,omitempty"`
+	Discovery  string       `json:"discovery,omitempty" yaml:"discovery,omitempty"` // "grant", "buy", "discover", "all"
 }
 
 // IsKnown reports whether the actor knows the recipe.
-// If Discovered is nil or true, it is known by default.
-// If Discovered is explicitly false, actor must have learned it.
+// If Discovery is "all" or Discovered is true (or both omitted), it is known by default.
+// If Discovery is "grant", "buy", or "discover" (or Discovered is explicitly false), actor must have learned it.
 func (r Recipe) IsKnown(actor *world.Entity) bool {
-	if r.Discovered == nil || *r.Discovered {
+	if strings.EqualFold(r.Discovery, "all") {
+		return true
+	}
+	if r.Discovered != nil && *r.Discovered {
+		return true
+	}
+	if r.Discovered == nil && r.Discovery == "" {
 		return true
 	}
 	if actor == nil {
@@ -58,7 +65,8 @@ func (r *Recipe) UnmarshalYAML(node *yaml.Node) error {
 		Skill      string       `yaml:"skill"`
 		Difficulty int          `yaml:"difficulty"`
 		MinSkill   int          `yaml:"min_skill"`
-		Discovered *bool        `yaml:"discovered"`
+		Discovered yaml.Node    `yaml:"discovered"`
+		Discovery  string       `yaml:"discovery"`
 	}
 	if err := node.Decode(&raw); err != nil {
 		return err
@@ -66,7 +74,39 @@ func (r *Recipe) UnmarshalYAML(node *yaml.Node) error {
 	*r = Recipe{
 		ID: raw.ID, Name: raw.Name, Station: raw.Station, Tools: raw.Tools,
 		Requires: raw.Requires, Count: raw.Count, Skill: raw.Skill, Difficulty: raw.Difficulty,
-		MinSkill: raw.MinSkill, Discovered: raw.Discovered,
+		MinSkill: raw.MinSkill, Discovery: strings.ToLower(strings.TrimSpace(raw.Discovery)),
+	}
+	if raw.Discovered.Kind != 0 {
+		if raw.Discovered.Kind == yaml.ScalarNode {
+			val := strings.ToLower(strings.TrimSpace(raw.Discovered.Value))
+			switch val {
+			case "true", "1", "yes", "on", "all":
+				b := true
+				r.Discovered = &b
+				if r.Discovery == "" {
+					r.Discovery = "all"
+				}
+			case "false", "0", "no", "off":
+				b := false
+				r.Discovered = &b
+				if r.Discovery == "" {
+					r.Discovery = "discover"
+				}
+			case "grant", "buy", "discover":
+				b := false
+				r.Discovered = &b
+				r.Discovery = val
+			}
+		}
+	} else if r.Discovery != "" {
+		switch r.Discovery {
+		case "all":
+			b := true
+			r.Discovered = &b
+		case "grant", "buy", "discover", "none":
+			b := false
+			r.Discovered = &b
+		}
 	}
 	if raw.Produces.Kind == 0 {
 		return nil

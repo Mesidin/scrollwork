@@ -182,6 +182,13 @@ func (p *Pack) Validate() error {
 				errs = append(errs, fmt.Sprintf("recipe %s: requires %q which is not an item", rec.ID, req.Item))
 			}
 		}
+		if rec.Discovery != "" {
+			switch strings.ToLower(rec.Discovery) {
+			case "grant", "buy", "discover", "all":
+			default:
+				errs = append(errs, fmt.Sprintf("recipe %s: discovery %q must be grant, buy, discover, or all", rec.ID, rec.Discovery))
+			}
+		}
 	}
 
 	questIDs := map[string]quest.Quest{}

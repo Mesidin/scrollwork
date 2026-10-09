@@ -818,7 +818,18 @@ func use(c *Context, p Parsed) {
 	}
 	if e.Use != nil && e.Use.LearnRecipe != "" {
 		recipeID := e.Use.LearnRecipe
-		learned := c.Actor.LearnRecipe(recipeID)
+		method := "discover"
+		if c.Pack != nil {
+			for _, r := range c.Pack.Recipes {
+				if strings.EqualFold(r.ID, recipeID) {
+					if r.Discovery != "" && r.Discovery != "all" {
+						method = r.Discovery
+					}
+					break
+				}
+			}
+		}
+		learned := c.Actor.LearnRecipe(recipeID, method)
 		recipeName := recipeID
 		if c.Pack != nil {
 			for _, r := range c.Pack.Recipes {
@@ -1216,7 +1227,7 @@ func listShop(c *Context, p Parsed) {
 	}
 	c.Print("%s offers:", npc.CapDisplay())
 	for _, it := range goods {
-		c.Print("  %s  (%d %s)", it.Display(), shopPrice(npc, it), c.Pack.Lexicon.Label(cur))
+		c.Print("  %s  (%d %s)", it.Display(), shopPrice(c, npc, it), c.Pack.Lexicon.Label(cur))
 	}
 	if purse, finite := economy.VendorPurse(npc); finite {
 		c.Print("%s has %d %s in the till.", npc.CapDisplay(), purse, c.Pack.Lexicon.Label(cur))
@@ -1246,8 +1257,11 @@ func buy(c *Context, p Parsed) {
 	for _, it := range c.World.Children(npc.ID) {
 		if it.HasKeyword(firstWord(what)) {
 			if item != nil {
-				c.Print("Which one?")
-				return
+				if (item.PrototypeID == "" || item.PrototypeID != it.PrototypeID) || item.Name != it.Name || item.Value != it.Value {
+					c.Print("Which one?")
+					return
+				}
+				continue
 			}
 			item = it
 		}
@@ -1265,8 +1279,11 @@ func buy(c *Context, p Parsed) {
 				}
 				if it.HasKeyword(firstWord(what)) {
 					if item != nil {
-						c.Print("Which one?")
-						return
+						if (item.PrototypeID == "" || item.PrototypeID != it.PrototypeID) || item.Name != it.Name || item.Value != it.Value {
+							c.Print("Which one?")
+							return
+						}
+						continue
 					}
 					item = it
 				}
@@ -1282,7 +1299,7 @@ func buy(c *Context, p Parsed) {
 		return
 	}
 	cur := shopCurrency(c, npc)
-	price := shopPrice(npc, item)
+	price := shopPrice(c, npc, item)
 	if c.Actor.Res(cur).Current < price {
 		c.Print("You can't afford that (%d %s).", price, c.Pack.Lexicon.Label(cur))
 		return
@@ -1340,7 +1357,7 @@ func sell(c *Context, p Parsed) {
 		return
 	}
 	cur := shopCurrency(c, npc)
-	price := economy.SellPrice(item)
+	price := economy.SellPrice(item, npc, c.World)
 	label := c.Pack.Lexicon.Label(cur)
 	if price < 1 {
 		c.Print("%s isn't interested in %s.", npc.CapDisplay(), item.Display())
@@ -1408,8 +1425,8 @@ func shopCurrency(c *Context, npc *world.Entity) string {
 	return "coin"
 }
 
-func shopPrice(npc, item *world.Entity) int {
-	return economy.BuyPrice(npc, item)
+func shopPrice(c *Context, npc, item *world.Entity) int {
+	return economy.BuyPrice(npc, item, c.World)
 }
 
 func ask(c *Context, p Parsed) {
@@ -1440,7 +1457,7 @@ func ask(c *Context, p Parsed) {
 		}
 		for k, recID := range npc.TeachRecipes {
 			if strings.EqualFold(matchedTopic, k) || strings.EqualFold(topic, k) {
-				if c.Actor.LearnRecipe(recID) {
+				if c.Actor.LearnRecipe(recID, "grant") {
 					recName := recID
 					if c.Pack != nil {
 						for _, r := range c.Pack.Recipes {
@@ -1821,6 +1838,11 @@ func recipesCmd(c *Context, _ Parsed) {
 			notes = append(notes, "materials here")
 		} else {
 			notes = append(notes, "missing materials")
+		}
+		if m := c.Actor.RecipeMethod(r.ID); m != "" {
+			notes = append(notes, m)
+		} else if r.Discovery != "" && r.Discovery != "all" {
+			notes = append(notes, r.Discovery)
 		}
 		c.Print("  %s — %s [%s]", r.Name, strings.Join(reqs, ", "), strings.Join(notes, ", "))
 	}
