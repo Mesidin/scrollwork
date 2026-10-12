@@ -107,8 +107,8 @@ Status Legend:
 
 ---
 
-## 7. Networking & Multiplayer (Long-Term)
+## 7. Networking & Multiplayer *(See architectural spec: [`features/multiplayer.md`](features/multiplayer.md))*
 
-* [ ] **Server Port Binding**: Bind `internal/server` protocol session handling to TCP / Telnet / SSH.
-* [ ] **Multiplayer Session Management**: Player connection lifecycle, room broadcasts, and multi-user chat channels.
-* [ ] **Account & Persistence Layer**: User credentials and character selection before world instantiation.
+* [ ] **Multi-Session Core Engine**: Multi-session management in `internal/server`, serialized command loop, and room/global broadcast channels (`say`, `emote`, `tell`, `who`, `gossip`).
+* [ ] **Network Gateways & Port Binding**: Bind `internal/server` protocol sessions to Telnet (ANSI text) and structured protocol streaming (TCP/WebSocket for Bubble Tea remote clients).
+* [ ] **Account & Persistence Layer**: User credentials, character selection/creation, isolated per-player saves, and link-dead grace periods.

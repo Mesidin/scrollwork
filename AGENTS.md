@@ -101,6 +101,7 @@ To onboard agents quickly and maintain long-term momentum, consult and maintain 
 - **`agent/features/`**: In-depth feature proposals and architectural designs:
   - `weather.md`: The implemented clock and weather scales, pack schema, and room flags.
   - `economy.md`: Original proposal. Durability, repair, finite purses, recipes, field kits, the vault, price curves, and discovery methods are in the engine.
+  - `multiplayer.md`: Networking & multiplayer architecture, actor event loop, transports (Telnet/JSON stream), session lifecycle, and persistence.
 
 **Rule for agents**: When completing a task or wrapping up a session, update `agent/roadmap.md` and document what changed in `agent/progress.md`.
 
