@@ -10,7 +10,7 @@ Status Legend:
 ## 1. Tooling & Infrastructure
 
 * [x] **Pack Integrity Tools**: Extended validation checks for unreachable rooms, orphaned keys, and broken script references.
-* [ ] **YAML Comment Preservation**: Prevent `save pack` from stripping comments in world YAML files.
+* [x] **YAML Comment Preservation**: Prevent `save pack` from stripping comments in world YAML files.
 
 ---
 

@@ -8,7 +8,7 @@ This document records the chronological development history, verified features, 
 
 * **Engine**: Go 1.22+ Bubble Tea MUD engine with runtime YAML+Lua pack loading.
 * **Test Suite**: `go test ./...` passing across all packages.
-* **Working Tree**: Extended pack integrity tools (reachability graph, orphaned/unplaced keys, door consistency, script existence and Lua syntax checks).
+* **Working Tree**: Extended pack integrity tools and YAML comment preservation across save pack / WriteWorld.
 * **Sample Packs**:
   * `games/old-house`: Core story regression pack.
   * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, economy, quests, and companion interactions.
@@ -302,4 +302,18 @@ This document records the chronological development history, verified features, 
 * **Testing & Documentation**:
   * Added unit test suites in `internal/pack/pack_test.go`: `TestValidateUnreachableRooms`, `TestValidateScriptReferencesAndSyntax`, and `TestValidateKeysAndLocks`.
   * Updated builder documentation in `internal/docs/engine/building.md` and agent tracking in `agent/roadmap.md`.
+
+### Milestone 14: YAML Comment Preservation on Save Pack (Oct 12, 2026)
+* **Non-Destructive World YAML Serialization**:
+  * Upgraded `writeYAML` in `internal/pack/pack.go` to parse existing YAML files into AST `yaml.Node` structures before writing.
+  * Implemented AST comment reconciliation (`transferComments`):
+    * File-level and section-level header/foot comments are preserved.
+    * Sequence elements (rooms, items, NPCs, recipes, quests) are matched by identifier (`id`, `key`, `name`, `item`) to carry over entry and field comments.
+    * Mapping keys and values retain their `HeadComment`, `LineComment`, and `FootComment` through in-engine edits and round-tripping.
+  * Configured YAML encoder with 2-space indentation matching existing pack style.
+* **Verification & Documentation**:
+  * Added unit tests in `internal/pack/pack_test.go`: `TestYAMLCommentPreservation` (rooms list with inline, block, and section comments) and `TestYAMLCommentPreservationMapping` (mapping configuration comments).
+  * Verified OLC round-trip compatibility in `internal/olc/olc_test.go` (`TestOLCSavePackRoundTrip`).
+  * Updated `AGENTS.md` and `agent/roadmap.md`.
+
 

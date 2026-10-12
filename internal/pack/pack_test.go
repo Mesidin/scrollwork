@@ -328,3 +328,119 @@ func TestValidateKeysAndLocks(t *testing.T) {
 	}
 }
 
+func TestYAMLCommentPreservation(t *testing.T) {
+	dir := t.TempDir()
+	worldDir := filepath.Join(dir, "world")
+	if err := os.MkdirAll(worldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	initialRoomsYAML := `# World rooms for test pack
+# Note: do not delete the porch
+
+- id: test.porch # Starting location
+  name: Front Porch
+  # Peeling paint description
+  long: Weathered boards.
+  exits:
+    north:
+      to: test.foyer # Leads into foyer
+
+# The foyer connects to other areas
+- id: test.foyer
+  name: Foyer
+  long: A narrow hall.
+`
+	roomsPath := filepath.Join(worldDir, "rooms.yaml")
+	if err := os.WriteFile(roomsPath, []byte(initialRoomsYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := Blank("test", dir)
+	p.Rooms = []RoomYAML{
+		{
+			ID:   "test.porch",
+			Name: "Grand Porch", // updated name
+			Long: "Weathered boards.",
+			Exits: map[string]ExitYAML{
+				"north": {To: "test.foyer"},
+			},
+		},
+		{
+			ID:   "test.foyer",
+			Name: "Foyer",
+			Long: "A narrow hall.",
+		},
+	}
+
+	if err := p.WriteWorld(); err != nil {
+		t.Fatalf("WriteWorld failed: %v", err)
+	}
+
+	saved, err := os.ReadFile(roomsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedStr := string(saved)
+
+	if !strings.Contains(savedStr, "name: Grand Porch") {
+		t.Fatalf("expected updated name 'Grand Porch', got:\n%s", savedStr)
+	}
+
+	for _, expectedComment := range []string{
+		"# World rooms for test pack",
+		"# Note: do not delete the porch",
+		"# Starting location",
+		"# Peeling paint description",
+		"# Leads into foyer",
+		"# The foyer connects to other areas",
+	} {
+		if !strings.Contains(savedStr, expectedComment) {
+			t.Errorf("missing comment %q in saved rooms.yaml:\n%s", expectedComment, savedStr)
+		}
+	}
+}
+
+func TestYAMLCommentPreservationMapping(t *testing.T) {
+	dir := t.TempDir()
+	initialPackYAML := `# Pack metadata configuration
+id: test # Primary pack identifier
+title: Test Pack # Human readable title
+tick_ms: 250
+combat_every: 4
+start_room: test.start # Entry room
+`
+	packPath := filepath.Join(dir, "pack.yaml")
+	if err := os.WriteFile(packPath, []byte(initialPackYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := Blank("test", dir)
+	p.Meta.Title = "Updated Test Pack"
+	if err := p.WriteWorld(); err != nil {
+		t.Fatalf("WriteWorld failed: %v", err)
+	}
+
+	saved, err := os.ReadFile(packPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedStr := string(saved)
+
+	if !strings.Contains(savedStr, "title: Updated Test Pack") {
+		t.Fatalf("expected updated title, got:\n%s", savedStr)
+	}
+
+	for _, expectedComment := range []string{
+		"# Pack metadata configuration",
+		"# Primary pack identifier",
+		"# Human readable title",
+		"# Entry room",
+	} {
+		if !strings.Contains(savedStr, expectedComment) {
+			t.Errorf("missing comment %q in saved pack.yaml:\n%s", expectedComment, savedStr)
+		}
+	}
+}
+
+

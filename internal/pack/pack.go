@@ -1,6 +1,7 @@
 package pack
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -922,12 +923,185 @@ func optionalListPath(dir, name string) (string, bool) {
 }
 
 func writeYAML(path string, v any) error {
-	b, err := yaml.Marshal(v)
+	existingBytes, err := os.ReadFile(path)
+	if err != nil || len(existingBytes) == 0 {
+		return writeFreshYAML(path, v)
+	}
+
+	var oldDoc yaml.Node
+	if err := yaml.Unmarshal(existingBytes, &oldDoc); err != nil {
+		return writeFreshYAML(path, v)
+	}
+
+	newBytes, err := yaml.Marshal(v)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	var newDoc yaml.Node
+	if err := yaml.Unmarshal(newBytes, &newDoc); err != nil {
+		return writeFreshYAML(path, v)
+	}
+
+	transferComments(&oldDoc, &newDoc)
+
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&newDoc); err != nil {
+		return writeFreshYAML(path, v)
+	}
+	if err := enc.Close(); err != nil {
+		return err
+	}
+	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
+
+func writeFreshYAML(path string, v any) error {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(v); err != nil {
+		return err
+	}
+	if err := enc.Close(); err != nil {
+		return err
+	}
+	return os.WriteFile(path, buf.Bytes(), 0o644)
+}
+
+func transferComments(oldNode, newNode *yaml.Node) {
+	if oldNode == nil || newNode == nil {
+		return
+	}
+
+	if oldNode.HeadComment != "" && newNode.HeadComment == "" {
+		newNode.HeadComment = oldNode.HeadComment
+	}
+	if oldNode.LineComment != "" && newNode.LineComment == "" {
+		newNode.LineComment = oldNode.LineComment
+	}
+	if oldNode.FootComment != "" && newNode.FootComment == "" {
+		newNode.FootComment = oldNode.FootComment
+	}
+
+	// Unwrap DocumentNode
+	if oldNode.Kind == yaml.DocumentNode && newNode.Kind == yaml.DocumentNode {
+		if len(oldNode.Content) > 0 && len(newNode.Content) > 0 {
+			transferComments(oldNode.Content[0], newNode.Content[0])
+		}
+		return
+	}
+
+	// Handle wrapped sequence in mapping (e.g. {recipes: [...]})
+	if oldNode.Kind == yaml.MappingNode && newNode.Kind == yaml.SequenceNode {
+		for i := 0; i+1 < len(oldNode.Content); i += 2 {
+			if oldNode.Content[i+1].Kind == yaml.SequenceNode {
+				transferComments(oldNode.Content[i+1], newNode)
+				return
+			}
+		}
+	}
+	if oldNode.Kind == yaml.SequenceNode && newNode.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(newNode.Content); i += 2 {
+			if newNode.Content[i+1].Kind == yaml.SequenceNode {
+				transferComments(oldNode, newNode.Content[i+1])
+				return
+			}
+		}
+	}
+
+	// Mapping nodes: match by key
+	if oldNode.Kind == yaml.MappingNode && newNode.Kind == yaml.MappingNode {
+		type pair struct {
+			key *yaml.Node
+			val *yaml.Node
+		}
+		oldMap := make(map[string]pair, len(oldNode.Content)/2)
+		for i := 0; i+1 < len(oldNode.Content); i += 2 {
+			oldMap[oldNode.Content[i].Value] = pair{
+				key: oldNode.Content[i],
+				val: oldNode.Content[i+1],
+			}
+		}
+
+		for i := 0; i+1 < len(newNode.Content); i += 2 {
+			newKey := newNode.Content[i]
+			newVal := newNode.Content[i+1]
+			if p, ok := oldMap[newKey.Value]; ok {
+				if p.key.HeadComment != "" && newKey.HeadComment == "" {
+					newKey.HeadComment = p.key.HeadComment
+				}
+				if p.key.LineComment != "" && newKey.LineComment == "" {
+					newKey.LineComment = p.key.LineComment
+				}
+				if p.key.FootComment != "" && newKey.FootComment == "" {
+					newKey.FootComment = p.key.FootComment
+				}
+				if p.val.LineComment != "" && newVal.LineComment == "" {
+					newVal.LineComment = p.val.LineComment
+				}
+				transferComments(p.val, newVal)
+			}
+		}
+		return
+	}
+
+	// Sequence nodes: match by identifier (id/key/name/item) or index
+	if oldNode.Kind == yaml.SequenceNode && newNode.Kind == yaml.SequenceNode {
+		oldById := make(map[string]*yaml.Node)
+		for _, item := range oldNode.Content {
+			id := nodeIdentifier(item)
+			if id != "" {
+				oldById[id] = item
+			}
+		}
+
+		for i, newItem := range newNode.Content {
+			var oldItem *yaml.Node
+			id := nodeIdentifier(newItem)
+			if id != "" {
+				oldItem = oldById[id]
+			}
+			if oldItem == nil && i < len(oldNode.Content) {
+				if nodeIdentifier(oldNode.Content[i]) == "" {
+					oldItem = oldNode.Content[i]
+				}
+			}
+			if oldItem != nil {
+				if oldItem.HeadComment != "" && newItem.HeadComment == "" {
+					newItem.HeadComment = oldItem.HeadComment
+				}
+				if oldItem.LineComment != "" && newItem.LineComment == "" {
+					newItem.LineComment = oldItem.LineComment
+				}
+				if oldItem.FootComment != "" && newItem.FootComment == "" {
+					newItem.FootComment = oldItem.FootComment
+				}
+				transferComments(oldItem, newItem)
+			}
+		}
+		return
+	}
+}
+
+func nodeIdentifier(n *yaml.Node) string {
+	if n == nil {
+		return ""
+	}
+	if n.Kind == yaml.ScalarNode {
+		return n.Value
+	}
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k := n.Content[i].Value
+			if k == "id" || k == "key" || k == "name" || k == "item" {
+				return n.Content[i+1].Value
+			}
+		}
+	}
+	return ""
+}
+
 
 // SyncFromWorld writes live rooms back into pack room list (build-mode save).
 func (p *Pack) SyncFromWorld(w *world.World) {

@@ -70,7 +70,7 @@ Player-facing help is Markdown. After editing `internal/docs/engine/*.md`, `help
 
 Never put Old House fiction, Grit/Calm labels, or room text in Go. Those belong in the pack (`lexicon.yaml`, `rpg.yaml`, `world/`, `help/`). The engine may print generic words (`help`, `look`) and pack labels via the lexicon.
 
-`save pack` round-trips YAML (comments may be lost). It must not rewrite Lua.
+`save pack` round-trips YAML (preserving comments). It must not rewrite Lua.
 
 ## Tests
 
@@ -91,7 +91,6 @@ Never put Old House fiction, Grit/Calm labels, or room text in Go. Those belong 
 - CI on push (run `go test ./...` locally).
 - Networked multiplayer.
 - Infocom-style parser.
-- YAML comment preservation on `save pack` (help/intro/Lua are left alone).
 
 ## Agent Knowledge Base & Progress Tracking (`agent/`)
 
