@@ -4,11 +4,11 @@ This document records the chronological development history, verified features, 
 
 ---
 
-## Current Status (as of Oct 9, 2026)
+## Current Status (as of Oct 12, 2026)
 
 * **Engine**: Go 1.22+ Bubble Tea MUD engine with runtime YAML+Lua pack loading.
 * **Test Suite**: `go test ./...` passing across all packages.
-* **Working Tree**: Price curves, recipe discovery, followers, and the Oct 9 review fixes for stock identity, shop NPCs, ask/talk, follow failures, loyalty, dismiss, and script lookup.
+* **Working Tree**: Extended pack integrity tools (reachability graph, orphaned/unplaced keys, door consistency, script existence and Lua syntax checks).
 * **Sample Packs**:
   * `games/old-house`: Core story regression pack.
   * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, economy, quests, and companion interactions.
@@ -285,3 +285,21 @@ This document records the chronological development history, verified features, 
   * `order dismiss` also releases the player when the player is following that pet, and clears a party link that points at the pet.
   * Script lookup returns nothing when several mobiles or several other bodies match. It does not walk the entity map and edit the last hit.
   * `discovery: buy` is the method stored when the character reads that recipe's manual (`use`). Carrying the manual, or buying the finished good, does not teach it.
+
+### Milestone 13: Pack Integrity Tools & Static Analysis (Oct 12, 2026)
+* **Room Reachability Graph Analysis**:
+  * Added BFS graph traversal in `internal/pack/validate.go` from `start_room` across exits.
+  * Supported entry points from quest relocations (`relocate.to`) and destination rooms referenced in Lua scripts.
+  * Catches and reports isolated/unreachable rooms that the player cannot reach.
+* **Key & Lock Integrity**:
+  * Unobtainable key detection: validates that every key required by a locked exit or container is actually obtainable in the world (placed in a room, inside a container, in NPC shop stock, in mob loot, as a quest reward, produced by a recipe, harvestable from a gather node, or referenced in a script).
+  * Orphaned key detection: identifies defined key items that never lock any exit or container and are not referenced in scripts.
+  * Reciprocal door consistency: detects conflicting keys specified on opposite sides of reciprocal doors.
+  * Container key validation: verifies that container `key` properties reference valid items.
+* **Script References & Lua Syntax Validation**:
+  * Enforces that script references across rooms, scenery extras, items, NPCs, and quests point to existing files in `scripts/`.
+  * Integrated `github.com/yuin/gopher-lua/parse` to validate the syntax of all Lua scripts in the pack during `sudengine validate` and pack load.
+* **Testing & Documentation**:
+  * Added unit test suites in `internal/pack/pack_test.go`: `TestValidateUnreachableRooms`, `TestValidateScriptReferencesAndSyntax`, and `TestValidateKeysAndLocks`.
+  * Updated builder documentation in `internal/docs/engine/building.md` and agent tracking in `agent/roadmap.md`.
+

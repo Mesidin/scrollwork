@@ -9,9 +9,8 @@ Status Legend:
 
 ## 1. Tooling & Infrastructure
 
-* [ ] **GitHub Actions CI**: Automated `go test ./...` on push and pull request across Linux, macOS, and Windows.
+* [x] **Pack Integrity Tools**: Extended validation checks for unreachable rooms, orphaned keys, and broken script references.
 * [ ] **YAML Comment Preservation**: Prevent `save pack` from stripping comments in world YAML files.
-* [ ] **Pack Integrity Tools**: Extended validation checks for unreachable rooms, orphaned keys, and broken script references.
 
 ---
 

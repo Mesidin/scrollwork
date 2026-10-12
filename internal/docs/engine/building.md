@@ -246,4 +246,9 @@ recipe del <id>                       delete recipe from pack
 
 ## Check your work
 
-Play it. `look`, `get`, `use`, `ask`, `kill`. `help` should list your `help/*.md` under Game. When it feels right, zip the folder — that folder is the game.
+Validate your pack with `sudengine validate <pack>`. The validator performs comprehensive static integrity checks:
+- **Graph reachability**: All rooms must be reachable from `start_room` (via exits, quest relocations, or script destinations).
+- **Key & lock integrity**: All keys required by doors or container items must exist and be obtainable in the world (placed in rooms, containers, shops, mob loot, quests, recipes, gather nodes, or scripts). Reciprocal door keys must match, and defined key items must unlock at least one lock or be referenced in a script.
+- **Script references & syntax**: Every script referenced by a room, scenery extra, item, NPC, or quest must exist in `scripts/`, and all Lua files are parsed to verify valid syntax.
+
+Play it: `sudengine play <pack>`. `look`, `get`, `use`, `ask`, `kill`. `help` should list your `help/*.md` under Game. When it feels right, zip the folder — that folder is the game.

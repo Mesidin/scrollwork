@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"sudengine/internal/quest"
 	"sudengine/internal/world"
 )
 
@@ -163,3 +164,167 @@ func TestEmptyRecipeFileIsCleared(t *testing.T) {
 		t.Fatal("quests.yaml should not be created for a pack that never had one")
 	}
 }
+
+func TestValidateUnreachableRooms(t *testing.T) {
+	p := Blank("t", t.TempDir())
+	p.Rooms = append(p.Rooms, RoomYAML{
+		ID:   "t.island",
+		Name: "Island Room",
+	})
+	err := p.Validate()
+	if err == nil || !strings.Contains(err.Error(), "room t.island: unreachable from start_room") {
+		t.Fatalf("expected unreachable error, got: %v", err)
+	}
+
+	// Exit connects start to island
+	p.Rooms[0].Exits = map[string]ExitYAML{"east": {To: "t.island"}}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("expected reachable via exit, got: %v", err)
+	}
+
+	// Island is unreachable via exits, but reached via quest relocate
+	p.Rooms[0].Exits = nil
+	p.Quests = []quest.Quest{
+		{
+			ID:    "q1",
+			Title: "Travel",
+			Rewards: quest.Rewards{
+				Relocate: []quest.Relocation{
+					{Mob: "puppy", To: "t.island"},
+				},
+			},
+		},
+	}
+	p.NPCs = []NPCYAML{{ID: "puppy", Name: "puppy"}}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("expected reachable via quest relocate, got: %v", err)
+	}
+
+	// Island is reachable via script mention
+	p.Quests = nil
+	p.NPCs = nil
+	p.Scripts = map[string]string{
+		"portal.lua": `teleport(player, "t.island")`,
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("expected reachable via script mention, got: %v", err)
+	}
+}
+
+func TestValidateScriptReferencesAndSyntax(t *testing.T) {
+	p := Blank("t", t.TempDir())
+	p.Rooms[0].Scripts = "missing_room.lua"
+	err := p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `room t.start: script "missing_room.lua" not found`) {
+		t.Fatalf("expected missing script error on room, got: %v", err)
+	}
+	p.Rooms[0].Scripts = ""
+
+	p.Rooms[0].Extras = []ExtraYAML{
+		{Name: "statue", Scripts: "missing_extra.lua"},
+	}
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `room t.start extra statue: script "missing_extra.lua" not found`) {
+		t.Fatalf("expected missing script error on extra, got: %v", err)
+	}
+	p.Rooms[0].Extras = nil
+
+	p.Items = []ItemYAML{
+		{ID: "scroll", Name: "scroll", Scripts: "missing_item.lua"},
+	}
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `item scroll: script "missing_item.lua" not found`) {
+		t.Fatalf("expected missing script error on item, got: %v", err)
+	}
+	p.Items = nil
+
+	p.NPCs = []NPCYAML{
+		{ID: "guard", Name: "guard", Scripts: "missing_npc.lua"},
+	}
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `npc guard: script "missing_npc.lua" not found`) {
+		t.Fatalf("expected missing script error on npc, got: %v", err)
+	}
+	p.NPCs = nil
+
+	p.Quests = []quest.Quest{
+		{ID: "q1", Title: "Quest", Script: "missing_quest.lua"},
+	}
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `quest q1: script "missing_quest.lua" not found`) {
+		t.Fatalf("expected missing script error on quest, got: %v", err)
+	}
+	p.Quests = nil
+
+	// Lua syntax error
+	p.Scripts = map[string]string{
+		"broken.lua": "function on_use(actor, self\n", // missing closing paren and end
+	}
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), "script broken.lua: syntax error") {
+		t.Fatalf("expected Lua syntax error, got: %v", err)
+	}
+
+	p.Scripts["broken.lua"] = "function on_use(actor, self) end\n"
+	if err := p.Validate(); err != nil {
+		t.Fatalf("expected valid Lua syntax, got: %v", err)
+	}
+}
+
+func TestValidateKeysAndLocks(t *testing.T) {
+	p := Blank("t", t.TempDir())
+	p.Rooms = append(p.Rooms, RoomYAML{ID: "t.vault", Name: "Vault"})
+	p.Rooms[0].Exits = map[string]ExitYAML{"north": {To: "t.vault", Key: "vault.key"}}
+	p.Rooms[1].Exits = map[string]ExitYAML{"south": {To: "t.start", Key: "other.key"}}
+
+	// 1. Exit key not in items
+	err := p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `key "vault.key" is not an item`) {
+		t.Fatalf("expected key not an item, got: %v", err)
+	}
+
+	p.Items = []ItemYAML{
+		{ID: "vault.key", Name: "iron key", Keywords: []string{"key"}},
+		{ID: "other.key", Name: "brass key", Keywords: []string{"key"}},
+	}
+	// 2. Conflicting door keys on reciprocal exits
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), "conflicting keys") {
+		t.Fatalf("expected conflicting keys on door, got: %v", err)
+	}
+
+	// Fix reciprocal exit key
+	p.Rooms[1].Exits["south"] = ExitYAML{To: "t.start", Key: "vault.key"}
+
+	// 3. Key required by lock is not placed in the world
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `key "vault.key" required by lock is not placed in the world`) {
+		t.Fatalf("expected unplaced key error, got: %v", err)
+	}
+	// Also other.key is an orphaned key item
+	if !strings.Contains(err.Error(), "item other.key: orphaned key does not unlock any door or container") {
+		t.Fatalf("expected orphaned key error on other.key, got: %v", err)
+	}
+
+	// Place vault.key in the start room, and remove other.key
+	p.Rooms[0].Items = []string{"vault.key"}
+	p.Items = []ItemYAML{{ID: "vault.key", Name: "iron key", Keywords: []string{"key"}}}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("expected valid key setup, got: %v", err)
+	}
+
+	// 4. Container lock with missing key item
+	p.Items = append(p.Items, ItemYAML{
+		ID:        "chest",
+		Name:      "chest",
+		Container: true,
+		Locked:    true,
+		Key:       "nonexistent.key",
+	})
+	p.Rooms[0].Items = append(p.Rooms[0].Items, "chest")
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `item chest: key "nonexistent.key" is not an item`) {
+		t.Fatalf("expected container missing key item error, got: %v", err)
+	}
+}
+

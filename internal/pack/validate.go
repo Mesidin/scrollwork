@@ -2,9 +2,12 @@ package pack
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"sudengine/internal/quest"
+
+	"github.com/yuin/gopher-lua/parse"
 )
 
 type ErrorList []string
@@ -82,6 +85,9 @@ func (p *Pack) Validate() error {
 				errs = append(errs, fmt.Sprintf("npc %s: loot item %q is not an item", n.ID, loot.Item))
 			}
 		}
+		if n.Scripts != "" && !hasScript(p, n.Scripts) {
+			errs = append(errs, fmt.Sprintf("npc %s: script %q not found", n.ID, n.Scripts))
+		}
 	}
 	for _, n := range p.NPCs {
 		if n.Shop == nil {
@@ -98,6 +104,14 @@ func (p *Pack) Validate() error {
 		}
 	}
 	for _, r := range p.Rooms {
+		if r.Scripts != "" && !hasScript(p, r.Scripts) {
+			errs = append(errs, fmt.Sprintf("room %s: script %q not found", r.ID, r.Scripts))
+		}
+		for _, ex := range r.Extras {
+			if ex.Scripts != "" && !hasScript(p, ex.Scripts) {
+				errs = append(errs, fmt.Sprintf("room %s extra %s: script %q not found", r.ID, ex.Name, ex.Scripts))
+			}
+		}
 		for dir, ex := range r.Exits {
 			if ex.To == "" {
 				errs = append(errs, fmt.Sprintf("room %s: exit %s has no to:", r.ID, dir))
@@ -106,7 +120,7 @@ func (p *Pack) Validate() error {
 			if _, ok := rooms[ex.To]; !ok {
 				errs = append(errs, fmt.Sprintf("room %s: exit %s points at missing room %q", r.ID, dir, ex.To))
 			}
-			if ex.Locked && ex.Key != "" {
+			if ex.Key != "" {
 				if _, ok := items[ex.Key]; !ok {
 					errs = append(errs, fmt.Sprintf("room %s: exit %s key %q is not an item", r.ID, dir, ex.Key))
 				}
@@ -124,6 +138,14 @@ func (p *Pack) Validate() error {
 		}
 	}
 	for _, it := range p.Items {
+		if it.Scripts != "" && !hasScript(p, it.Scripts) {
+			errs = append(errs, fmt.Sprintf("item %s: script %q not found", it.ID, it.Scripts))
+		}
+		if it.Key != "" {
+			if _, ok := items[it.Key]; !ok {
+				errs = append(errs, fmt.Sprintf("item %s: key %q is not an item", it.ID, it.Key))
+			}
+		}
 		for _, cid := range it.Contains {
 			if _, ok := items[cid]; !ok {
 				errs = append(errs, fmt.Sprintf("item %s: contains %q which is not an item", it.ID, cid))
@@ -255,13 +277,8 @@ func (p *Pack) Validate() error {
 		if q.Rewards.Currency != "" && !hasResource(p, q.Rewards.Currency) {
 			errs = append(errs, fmt.Sprintf("quest %s: reward currency %q is not in resources", q.ID, q.Rewards.Currency))
 		}
-		if q.Script != "" {
-			name := strings.TrimPrefix(q.Script, "scripts/")
-			_, ok1 := p.Scripts[name]
-			_, ok2 := p.Scripts[name+".lua"]
-			if !ok1 && !ok2 {
-				errs = append(errs, fmt.Sprintf("quest %s: script %q not found", q.ID, q.Script))
-			}
+		if q.Script != "" && !hasScript(p, q.Script) {
+			errs = append(errs, fmt.Sprintf("quest %s: script %q not found", q.ID, q.Script))
 		}
 		for _, rel := range q.Rewards.Relocate {
 			if rel.Mob == "" {
@@ -284,10 +301,253 @@ func (p *Pack) Validate() error {
 			}
 		}
 	}
+
+	validateScriptSyntax(p, &errs)
+	validateReciprocalDoors(p, rooms, &errs)
+	validateKeys(p, rooms, items, npcs, &errs)
+	validateReachability(p, rooms, &errs)
+
 	if len(errs) == 0 {
 		return nil
 	}
 	return errs
+}
+
+func validateScriptSyntax(p *Pack, errs *ErrorList) {
+	if len(p.Scripts) == 0 {
+		return
+	}
+	checked := map[string]bool{}
+	names := make([]string, 0, len(p.Scripts))
+	for name := range p.Scripts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		src := p.Scripts[name]
+		if checked[src] {
+			continue
+		}
+		if !strings.HasSuffix(name, ".lua") && p.Scripts[name+".lua"] != "" {
+			continue
+		}
+		checked[src] = true
+		if _, err := parse.Parse(strings.NewReader(src), name); err != nil {
+			*errs = append(*errs, fmt.Sprintf("script %s: syntax error: %v", name, err))
+		}
+	}
+}
+
+func validateReciprocalDoors(p *Pack, rooms map[string]RoomYAML, errs *ErrorList) {
+	seenPairs := map[string]bool{}
+	for _, r := range p.Rooms {
+		for _, ex := range r.Exits {
+			if ex.To == "" || ex.To == r.ID {
+				continue
+			}
+			dest, ok := rooms[ex.To]
+			if !ok {
+				continue
+			}
+			for _, backEx := range dest.Exits {
+				if backEx.To == r.ID {
+					pairKey := r.ID + "<->" + dest.ID
+					if r.ID > dest.ID {
+						pairKey = dest.ID + "<->" + r.ID
+					}
+					if seenPairs[pairKey] {
+						continue
+					}
+					seenPairs[pairKey] = true
+					if ex.Key != "" && backEx.Key != "" && ex.Key != backEx.Key {
+						*errs = append(*errs, fmt.Sprintf("rooms %s and %s: conflicting keys %q and %q on door", r.ID, dest.ID, ex.Key, backEx.Key))
+					}
+				}
+			}
+		}
+	}
+}
+
+func validateKeys(p *Pack, rooms map[string]RoomYAML, items map[string]ItemYAML, npcs map[string]NPCYAML, errs *ErrorList) {
+	requiredKeys := map[string]bool{}
+	for _, r := range p.Rooms {
+		for _, ex := range r.Exits {
+			if ex.Key != "" {
+				requiredKeys[ex.Key] = true
+			}
+		}
+	}
+	for _, it := range p.Items {
+		if it.Key != "" {
+			requiredKeys[it.Key] = true
+		}
+	}
+
+	placedItems := map[string]bool{}
+	for _, r := range p.Rooms {
+		for _, id := range r.Items {
+			placedItems[id] = true
+		}
+		if r.Gather != nil && r.Gather.Resource != "" {
+			placedItems[r.Gather.Resource] = true
+		}
+		for _, ex := range r.Extras {
+			if ex.Gather != nil && ex.Gather.Resource != "" {
+				placedItems[ex.Gather.Resource] = true
+			}
+		}
+	}
+	for _, it := range p.Items {
+		for _, cid := range it.Contains {
+			placedItems[cid] = true
+		}
+		if it.Gather != nil && it.Gather.Resource != "" {
+			placedItems[it.Gather.Resource] = true
+		}
+	}
+	for _, n := range p.NPCs {
+		if n.Shop != nil {
+			for _, sid := range n.Shop.Stock {
+				placedItems[sid] = true
+			}
+		}
+		for _, loot := range n.Loot {
+			placedItems[loot.Item] = true
+		}
+	}
+	for _, q := range p.Quests {
+		for _, id := range q.Rewards.Items {
+			placedItems[id] = true
+		}
+	}
+	for _, rec := range p.Recipes {
+		if rec.Produces != "" {
+			placedItems[rec.Produces] = true
+		}
+	}
+	for keyID := range requiredKeys {
+		if scriptMentions(p, keyID) {
+			placedItems[keyID] = true
+		}
+	}
+
+	// Unobtainable keys: a required key must be placed in the world or referenced in a script
+	reqList := make([]string, 0, len(requiredKeys))
+	for k := range requiredKeys {
+		reqList = append(reqList, k)
+	}
+	sort.Strings(reqList)
+	for _, k := range reqList {
+		if !placedItems[k] {
+			*errs = append(*errs, fmt.Sprintf("key %q required by lock is not placed in the world", k))
+		}
+	}
+
+	// Orphaned keys: a defined key item must lock at least one exit or container, or be used in a script
+	for _, it := range p.Items {
+		if isKeyItem(it) {
+			if !requiredKeys[it.ID] && !scriptMentions(p, it.ID) {
+				*errs = append(*errs, fmt.Sprintf("item %s: orphaned key does not unlock any door or container", it.ID))
+			}
+		}
+	}
+}
+
+func validateReachability(p *Pack, rooms map[string]RoomYAML, errs *ErrorList) {
+	if p.Meta.StartRoom == "" || rooms[p.Meta.StartRoom].ID == "" {
+		return
+	}
+	reachable := map[string]bool{p.Meta.StartRoom: true}
+	queue := []string{p.Meta.StartRoom}
+
+	for _, q := range p.Quests {
+		for _, rel := range q.Rewards.Relocate {
+			if rel.To != "" && !reachable[rel.To] {
+				if _, ok := rooms[rel.To]; ok {
+					reachable[rel.To] = true
+					queue = append(queue, rel.To)
+				}
+			}
+		}
+	}
+
+	for rID := range rooms {
+		if !reachable[rID] && scriptMentions(p, rID) {
+			reachable[rID] = true
+			queue = append(queue, rID)
+		}
+	}
+
+	for len(queue) > 0 {
+		currID := queue[0]
+		queue = queue[1:]
+		r := rooms[currID]
+		for _, ex := range r.Exits {
+			if ex.To != "" && !reachable[ex.To] {
+				if _, ok := rooms[ex.To]; ok {
+					reachable[ex.To] = true
+					queue = append(queue, ex.To)
+				}
+			}
+		}
+	}
+
+	for _, r := range p.Rooms {
+		if !reachable[r.ID] {
+			*errs = append(*errs, fmt.Sprintf("room %s: unreachable from start_room %q", r.ID, p.Meta.StartRoom))
+		}
+	}
+}
+
+func hasScript(p *Pack, ref string) bool {
+	if ref == "" {
+		return true
+	}
+	if p.Scripts == nil {
+		return false
+	}
+	name := strings.TrimPrefix(ref, "scripts/")
+	if _, ok := p.Scripts[name]; ok {
+		return true
+	}
+	if _, ok := p.Scripts[name+".lua"]; ok {
+		return true
+	}
+	if _, ok := p.Scripts[strings.TrimSuffix(name, ".lua")]; ok {
+		return true
+	}
+	return false
+}
+
+func scriptMentions(p *Pack, target string) bool {
+	if target == "" || p.Scripts == nil {
+		return false
+	}
+	for _, src := range p.Scripts {
+		if strings.Contains(src, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func isKeyItem(it ItemYAML) bool {
+	id := strings.ToLower(it.ID)
+	if id == "key" || strings.HasSuffix(id, "-key") || strings.HasSuffix(id, "_key") || strings.HasSuffix(id, ".key") {
+		return true
+	}
+	for _, kw := range it.Keywords {
+		if strings.EqualFold(kw, "key") {
+			return true
+		}
+	}
+	for _, f := range it.Flags {
+		if strings.EqualFold(f, "key") {
+			return true
+		}
+	}
+	return false
 }
 
 func knownRating(p *Pack, ref string) bool {
