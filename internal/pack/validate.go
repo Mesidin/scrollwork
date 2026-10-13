@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"sudengine/internal/quest"
+	"sudengine/internal/world"
 
 	"github.com/yuin/gopher-lua/parse"
 )
@@ -329,9 +330,6 @@ func validateScriptSyntax(p *Pack, errs *ErrorList) {
 		if checked[src] {
 			continue
 		}
-		if !strings.HasSuffix(name, ".lua") && p.Scripts[name+".lua"] != "" {
-			continue
-		}
 		checked[src] = true
 		if _, err := parse.Parse(strings.NewReader(src), name); err != nil {
 			*errs = append(*errs, fmt.Sprintf("script %s: syntax error: %v", name, err))
@@ -342,31 +340,51 @@ func validateScriptSyntax(p *Pack, errs *ErrorList) {
 func validateReciprocalDoors(p *Pack, rooms map[string]RoomYAML, errs *ErrorList) {
 	seenPairs := map[string]bool{}
 	for _, r := range p.Rooms {
-		for _, ex := range r.Exits {
+		for dir, ex := range r.Exits {
 			if ex.To == "" || ex.To == r.ID {
+				continue
+			}
+			opp := world.Opposite(dir)
+			if opp == "" {
 				continue
 			}
 			dest, ok := rooms[ex.To]
 			if !ok {
 				continue
 			}
-			for _, backEx := range dest.Exits {
-				if backEx.To == r.ID {
-					pairKey := r.ID + "<->" + dest.ID
-					if r.ID > dest.ID {
-						pairKey = dest.ID + "<->" + r.ID
-					}
-					if seenPairs[pairKey] {
-						continue
-					}
-					seenPairs[pairKey] = true
-					if ex.Key != "" && backEx.Key != "" && ex.Key != backEx.Key {
-						*errs = append(*errs, fmt.Sprintf("rooms %s and %s: conflicting keys %q and %q on door", r.ID, dest.ID, ex.Key, backEx.Key))
-					}
+			var backDir string
+			var backEx ExitYAML
+			found := false
+			for d, be := range dest.Exits {
+				if be.To == r.ID && world.CanonicalDir(d) == opp {
+					backDir = d
+					backEx = be
+					found = true
+					break
 				}
+			}
+			if !found {
+				continue
+			}
+			pairKey := doorPair(r.ID, dir, dest.ID, backDir)
+			if seenPairs[pairKey] {
+				continue
+			}
+			seenPairs[pairKey] = true
+			if ex.Key != "" && backEx.Key != "" && ex.Key != backEx.Key {
+				*errs = append(*errs, fmt.Sprintf("rooms %s and %s: conflicting keys %q and %q on door", r.ID, dest.ID, ex.Key, backEx.Key))
 			}
 		}
 	}
+}
+
+func doorPair(aRoom, aDir, bRoom, bDir string) string {
+	a := aRoom + " " + world.CanonicalDir(aDir)
+	b := bRoom + " " + world.CanonicalDir(bDir)
+	if a > b {
+		a, b = b, a
+	}
+	return a + " <-> " + b
 }
 
 func validateKeys(p *Pack, rooms map[string]RoomYAML, items map[string]ItemYAML, npcs map[string]NPCYAML, errs *ErrorList) {
@@ -397,23 +415,19 @@ func validateKeys(p *Pack, rooms map[string]RoomYAML, items map[string]ItemYAML,
 				placedItems[ex.Gather.Resource] = true
 			}
 		}
-	}
-	for _, it := range p.Items {
-		for _, cid := range it.Contains {
-			placedItems[cid] = true
-		}
-		if it.Gather != nil && it.Gather.Resource != "" {
-			placedItems[it.Gather.Resource] = true
-		}
-	}
-	for _, n := range p.NPCs {
-		if n.Shop != nil {
-			for _, sid := range n.Shop.Stock {
-				placedItems[sid] = true
+		for _, nid := range r.NPCs {
+			n, ok := npcs[nid]
+			if !ok {
+				continue
 			}
-		}
-		for _, loot := range n.Loot {
-			placedItems[loot.Item] = true
+			if n.Shop != nil {
+				for _, sid := range n.Shop.Stock {
+					placedItems[sid] = true
+				}
+			}
+			for _, loot := range n.Loot {
+				placedItems[loot.Item] = true
+			}
 		}
 	}
 	for _, q := range p.Quests {
@@ -424,6 +438,37 @@ func validateKeys(p *Pack, rooms map[string]RoomYAML, items map[string]ItemYAML,
 	for _, rec := range p.Recipes {
 		if rec.Produces != "" {
 			placedItems[rec.Produces] = true
+		}
+	}
+	// Contents and gather nodes count only once their holder is already placed.
+	// A key does not count when its only holder is the container that key locks.
+	seen := map[string]bool{}
+	var queue []string
+	for id := range placedItems {
+		queue = append(queue, id)
+	}
+	sort.Strings(queue)
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		it, ok := items[id]
+		if !ok {
+			continue
+		}
+		if it.Gather != nil && it.Gather.Resource != "" && !placedItems[it.Gather.Resource] {
+			placedItems[it.Gather.Resource] = true
+			queue = append(queue, it.Gather.Resource)
+		}
+		for _, cid := range it.Contains {
+			if cid == "" || cid == it.Key || placedItems[cid] {
+				continue
+			}
+			placedItems[cid] = true
+			queue = append(queue, cid)
 		}
 	}
 	for keyID := range requiredKeys {
@@ -525,29 +570,40 @@ func scriptMentions(p *Pack, target string) bool {
 		return false
 	}
 	for _, src := range p.Scripts {
-		if strings.Contains(src, target) {
+		if tokenContains(src, target) {
 			return true
 		}
 	}
 	return false
 }
 
-func isKeyItem(it ItemYAML) bool {
-	id := strings.ToLower(it.ID)
-	if id == "key" || strings.HasSuffix(id, "-key") || strings.HasSuffix(id, "_key") || strings.HasSuffix(id, ".key") {
-		return true
-	}
-	for _, kw := range it.Keywords {
-		if strings.EqualFold(kw, "key") {
+// tokenContains reports whether target is a whole id in src.
+// Letters, digits, '_', '.', and '-' stick to the id, so house.hall does not match house.hallway.
+func tokenContains(src, target string) bool {
+	for i := 0; i+len(target) <= len(src); {
+		j := strings.Index(src[i:], target)
+		if j < 0 {
+			return false
+		}
+		j += i
+		end := j + len(target)
+		beforeOK := j == 0 || !isIDChar(src[j-1])
+		afterOK := end == len(src) || !isIDChar(src[end])
+		if beforeOK && afterOK {
 			return true
 		}
-	}
-	for _, f := range it.Flags {
-		if strings.EqualFold(f, "key") {
-			return true
-		}
+		i = j + 1
 	}
 	return false
+}
+
+func isIDChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '.' || b == '-'
+}
+
+func isKeyItem(it ItemYAML) bool {
+	id := strings.ToLower(it.ID)
+	return id == "key" || strings.HasSuffix(id, "-key") || strings.HasSuffix(id, "_key") || strings.HasSuffix(id, ".key")
 }
 
 func knownRating(p *Pack, ref string) bool {

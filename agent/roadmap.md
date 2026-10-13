@@ -9,8 +9,8 @@ Status Legend:
 
 ## 1. Tooling & Infrastructure
 
-* [x] **Pack Integrity Tools**: Extended validation checks for unreachable rooms, orphaned keys, and broken script references.
-* [x] **YAML Comment Preservation**: Prevent `save pack` from stripping comments in world YAML files.
+* [x] **Pack Integrity Tools**: Extended validation checks for unreachable rooms, orphaned keys, and broken script references. Script ids are whole tokens, keys must sit on a placed holder, and opposite doors are compared separately.
+* [x] **YAML Comment Preservation**: Prevent `save pack` from stripping comments in world YAML files. List identity prefers `id`, a wrapped file uses the list named for that file, and a failed read leaves the file alone.
 
 ---
 

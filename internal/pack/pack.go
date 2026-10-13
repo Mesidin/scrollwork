@@ -924,7 +924,13 @@ func optionalListPath(dir, name string) (string, bool) {
 
 func writeYAML(path string, v any) error {
 	existingBytes, err := os.ReadFile(path)
-	if err != nil || len(existingBytes) == 0 {
+	if err != nil {
+		if os.IsNotExist(err) {
+			return writeFreshYAML(path, v)
+		}
+		return err
+	}
+	if len(existingBytes) == 0 {
 		return writeFreshYAML(path, v)
 	}
 
@@ -942,7 +948,8 @@ func writeYAML(path string, v any) error {
 		return writeFreshYAML(path, v)
 	}
 
-	transferComments(&oldDoc, &newDoc)
+	listKey := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	transferComments(&oldDoc, &newDoc, listKey)
 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
@@ -969,7 +976,7 @@ func writeFreshYAML(path string, v any) error {
 	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
 
-func transferComments(oldNode, newNode *yaml.Node) {
+func transferComments(oldNode, newNode *yaml.Node, listKey string) {
 	if oldNode == nil || newNode == nil {
 		return
 	}
@@ -987,27 +994,23 @@ func transferComments(oldNode, newNode *yaml.Node) {
 	// Unwrap DocumentNode
 	if oldNode.Kind == yaml.DocumentNode && newNode.Kind == yaml.DocumentNode {
 		if len(oldNode.Content) > 0 && len(newNode.Content) > 0 {
-			transferComments(oldNode.Content[0], newNode.Content[0])
+			transferComments(oldNode.Content[0], newNode.Content[0], listKey)
 		}
 		return
 	}
 
-	// Handle wrapped sequence in mapping (e.g. {recipes: [...]})
+	// A bare list on one side and a wrapped list on the other.
 	if oldNode.Kind == yaml.MappingNode && newNode.Kind == yaml.SequenceNode {
-		for i := 0; i+1 < len(oldNode.Content); i += 2 {
-			if oldNode.Content[i+1].Kind == yaml.SequenceNode {
-				transferComments(oldNode.Content[i+1], newNode)
-				return
-			}
+		if seq := pickSequence(oldNode, listKey); seq != nil {
+			transferComments(seq, newNode, "")
 		}
+		return
 	}
 	if oldNode.Kind == yaml.SequenceNode && newNode.Kind == yaml.MappingNode {
-		for i := 0; i+1 < len(newNode.Content); i += 2 {
-			if newNode.Content[i+1].Kind == yaml.SequenceNode {
-				transferComments(oldNode, newNode.Content[i+1])
-				return
-			}
+		if seq := pickSequence(newNode, listKey); seq != nil {
+			transferComments(oldNode, seq, "")
 		}
+		return
 	}
 
 	// Mapping nodes: match by key
@@ -1040,27 +1043,28 @@ func transferComments(oldNode, newNode *yaml.Node) {
 				if p.val.LineComment != "" && newVal.LineComment == "" {
 					newVal.LineComment = p.val.LineComment
 				}
-				transferComments(p.val, newVal)
+				transferComments(p.val, newVal, "")
 			}
 		}
 		return
 	}
 
-	// Sequence nodes: match by identifier (id/key/name/item) or index
+	// Sequence nodes: match by identifier (id, then key, name, or item) or index
 	if oldNode.Kind == yaml.SequenceNode && newNode.Kind == yaml.SequenceNode {
-		oldById := make(map[string]*yaml.Node)
+		oldById := make(map[string][]*yaml.Node)
 		for _, item := range oldNode.Content {
 			id := nodeIdentifier(item)
 			if id != "" {
-				oldById[id] = item
+				oldById[id] = append(oldById[id], item)
 			}
 		}
 
 		for i, newItem := range newNode.Content {
 			var oldItem *yaml.Node
 			id := nodeIdentifier(newItem)
-			if id != "" {
-				oldItem = oldById[id]
+			if id != "" && len(oldById[id]) > 0 {
+				oldItem = oldById[id][0]
+				oldById[id] = oldById[id][1:]
 			}
 			if oldItem == nil && i < len(oldNode.Content) {
 				if nodeIdentifier(oldNode.Content[i]) == "" {
@@ -1077,11 +1081,37 @@ func transferComments(oldNode, newNode *yaml.Node) {
 				if oldItem.FootComment != "" && newItem.FootComment == "" {
 					newItem.FootComment = oldItem.FootComment
 				}
-				transferComments(oldItem, newItem)
+				transferComments(oldItem, newItem, "")
 			}
 		}
 		return
 	}
+}
+
+// pickSequence chooses the list to reconcile with a bare sequence.
+// A key matching the file stem wins. Otherwise the only list in the mapping wins.
+// Several unnamed lists are left alone so the first list cannot donate its comments.
+func pickSequence(mapping *yaml.Node, listKey string) *yaml.Node {
+	var only *yaml.Node
+	count := 0
+	var named *yaml.Node
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i+1].Kind != yaml.SequenceNode {
+			continue
+		}
+		count++
+		only = mapping.Content[i+1]
+		if listKey != "" && mapping.Content[i].Value == listKey {
+			named = mapping.Content[i+1]
+		}
+	}
+	if named != nil {
+		return named
+	}
+	if count == 1 {
+		return only
+	}
+	return nil
 }
 
 func nodeIdentifier(n *yaml.Node) string {
@@ -1091,17 +1121,25 @@ func nodeIdentifier(n *yaml.Node) string {
 	if n.Kind == yaml.ScalarNode {
 		return n.Value
 	}
-	if n.Kind == yaml.MappingNode {
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			k := n.Content[i].Value
-			if k == "id" || k == "key" || k == "name" || k == "item" {
-				return n.Content[i+1].Value
+	if n.Kind != yaml.MappingNode {
+		return ""
+	}
+	vals := map[string]string{}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k := n.Content[i].Value
+		if k == "id" || k == "key" || k == "name" || k == "item" {
+			if _, ok := vals[k]; !ok {
+				vals[k] = n.Content[i+1].Value
 			}
+		}
+	}
+	for _, k := range []string{"id", "key", "name", "item"} {
+		if v := vals[k]; v != "" {
+			return v
 		}
 	}
 	return ""
 }
-
 
 // SyncFromWorld writes live rooms back into pack room list (build-mode save).
 func (p *Pack) SyncFromWorld(w *world.World) {

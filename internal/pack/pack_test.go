@@ -200,9 +200,18 @@ func TestValidateUnreachableRooms(t *testing.T) {
 		t.Fatalf("expected reachable via quest relocate, got: %v", err)
 	}
 
-	// Island is reachable via script mention
+	// A longer id that merely contains the room id is not an entrance.
 	p.Quests = nil
 	p.NPCs = nil
+	p.Scripts = map[string]string{
+		"portal.lua": `teleport(player, "t.island_west")`,
+	}
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), "room t.island: unreachable from start_room") {
+		t.Fatalf("expected substring script id to stay unreachable, got: %v", err)
+	}
+
+	// Island is reachable via script mention
 	p.Scripts = map[string]string{
 		"portal.lua": `teleport(player, "t.island")`,
 	}
@@ -269,6 +278,16 @@ func TestValidateScriptReferencesAndSyntax(t *testing.T) {
 	if err := p.Validate(); err != nil {
 		t.Fatalf("expected valid Lua syntax, got: %v", err)
 	}
+
+	// A different body under the unsuffixed name is still parsed.
+	p.Scripts = map[string]string{
+		"broken":     "function on_use(actor, self\n",
+		"broken.lua": "function on_use(actor, self) end\n",
+	}
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), "script broken: syntax error") {
+		t.Fatalf("expected syntax error in the unsuffixed body, got: %v", err)
+	}
 }
 
 func TestValidateKeysAndLocks(t *testing.T) {
@@ -325,6 +344,84 @@ func TestValidateKeysAndLocks(t *testing.T) {
 	err = p.Validate()
 	if err == nil || !strings.Contains(err.Error(), `item chest: key "nonexistent.key" is not an item`) {
 		t.Fatalf("expected container missing key item error, got: %v", err)
+	}
+}
+
+func TestValidateKeyPlacementAndDoorPairs(t *testing.T) {
+	p := Blank("t", t.TempDir())
+	p.Rooms = append(p.Rooms, RoomYAML{ID: "t.vault", Name: "Vault"})
+	p.Rooms[0].Exits = map[string]ExitYAML{
+		"north": {To: "t.vault", Key: "vault.key"},
+		"up":    {To: "t.vault", Key: "hatch.key"},
+	}
+	p.Rooms[1].Exits = map[string]ExitYAML{
+		"south": {To: "t.start", Key: "vault.key"},
+		"down":  {To: "t.start", Key: "hatch.key"},
+	}
+	p.Items = []ItemYAML{
+		{ID: "vault.key", Name: "iron key"},
+		{ID: "hatch.key", Name: "hatch key"},
+		{ID: "lantern", Name: "lantern", Keywords: []string{"key"}, Flags: []string{"key"}},
+	}
+	p.Rooms[0].Items = []string{"vault.key", "hatch.key", "lantern"}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("two consistent doors should pass, got: %v", err)
+	}
+
+	p.Rooms[1].Exits["down"] = ExitYAML{To: "t.start", Key: "vault.key"}
+	err := p.Validate()
+	if err == nil || !strings.Contains(err.Error(), "conflicting keys") {
+		t.Fatalf("expected the up/down pair to conflict, got: %v", err)
+	}
+
+	p.Rooms[0].Exits = map[string]ExitYAML{"north": {To: "t.vault", Key: "vault.key"}}
+	p.Rooms[1].Exits = map[string]ExitYAML{"south": {To: "t.start", Key: "vault.key"}}
+	p.Items = []ItemYAML{
+		{ID: "vault.key", Name: "iron key"},
+		{ID: "chest", Name: "chest", Contains: []string{"vault.key"}},
+	}
+	p.Rooms[0].Items = nil
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `key "vault.key" required by lock is not placed in the world`) {
+		t.Fatalf("unplaced chest should not place the key, got: %v", err)
+	}
+
+	p.Rooms[0].Items = []string{"chest"}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("key inside a placed chest should count, got: %v", err)
+	}
+
+	p.Items[1].Key = "vault.key"
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `key "vault.key" required by lock is not placed in the world`) {
+		t.Fatalf("key locked inside its own chest should not count, got: %v", err)
+	}
+
+	p.Items = []ItemYAML{{ID: "vault.key", Name: "iron key"}}
+	p.Rooms[0].Items = nil
+	p.NPCs = []NPCYAML{{
+		ID: "smith", Name: "smith",
+		Shop: &world.Shop{Currency: "hp", Stock: []string{"vault.key"}},
+	}}
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `key "vault.key" required by lock is not placed in the world`) {
+		t.Fatalf("unplaced shop should not place the key, got: %v", err)
+	}
+	p.Rooms[0].NPCs = []string{"smith"}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("placed shop stock should count, got: %v", err)
+	}
+
+	p.Rooms[0].NPCs = nil
+	p.NPCs = nil
+	p.Scripts = map[string]string{"give.lua": `give(actor, "vault.keyring")`}
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), `key "vault.key" required by lock is not placed in the world`) {
+		t.Fatalf("longer script id should not place the key, got: %v", err)
+	}
+	p.Scripts["give.lua"] = `give(actor, "vault.key")`
+	if err := p.Validate(); err != nil {
+		t.Fatalf("whole script id should place the key, got: %v", err)
 	}
 }
 
@@ -443,4 +540,60 @@ start_room: test.start # Entry room
 	}
 }
 
+func TestYAMLCommentMatchesIDBeforeName(t *testing.T) {
+	dir := t.TempDir()
+	worldDir := filepath.Join(dir, "world")
+	if err := os.MkdirAll(worldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initial := `notes:
+  - id: noise # wrong list
+rooms:
+  - name: Front Porch
+    id: test.porch # keep me
+    long: Weathered boards.
+  - name: Front Porch
+    id: test.porch # second porch
+    long: Weathered boards.
+`
+	roomsPath := filepath.Join(worldDir, "rooms.yaml")
+	if err := os.WriteFile(roomsPath, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := Blank("test", dir)
+	p.Rooms = []RoomYAML{
+		{ID: "test.porch", Name: "Grand Porch", Long: "Weathered boards."},
+		{ID: "test.porch", Name: "Side Porch", Long: "Weathered boards."},
+	}
+	if err := p.WriteWorld(); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(roomsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedStr := string(saved)
+	if strings.Contains(savedStr, "wrong list") {
+		t.Fatalf("notes list donated its comment:\n%s", savedStr)
+	}
+	for _, comment := range []string{"# keep me", "# second porch"} {
+		if !strings.Contains(savedStr, comment) {
+			t.Errorf("missing %q in:\n%s", comment, savedStr)
+		}
+	}
+	if !strings.Contains(savedStr, "name: Grand Porch") || !strings.Contains(savedStr, "name: Side Porch") {
+		t.Fatalf("names were not updated:\n%s", savedStr)
+	}
+}
 
+func TestWriteYAMLReadErrorDoesNotReplace(t *testing.T) {
+	dir := t.TempDir()
+	err := writeYAML(dir, map[string]string{"a": "b"})
+	if err == nil {
+		t.Fatal("expected a read error for a directory")
+	}
+	info, statErr := os.Stat(dir)
+	if statErr != nil || !info.IsDir() {
+		t.Fatalf("directory was replaced: %v", statErr)
+	}
+}

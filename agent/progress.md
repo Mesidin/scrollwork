@@ -4,11 +4,11 @@ This document records the chronological development history, verified features, 
 
 ---
 
-## Current Status (as of Oct 12, 2026)
+## Current Status (as of Oct 13, 2026)
 
 * **Engine**: Go 1.22+ Bubble Tea MUD engine with runtime YAML+Lua pack loading.
 * **Test Suite**: `go test ./...` passing across all packages.
-* **Working Tree**: Extended pack integrity tools and YAML comment preservation across save pack / WriteWorld.
+* **Working Tree**: Pack integrity and YAML comment preservation, including the Oct 13 review fixes for script tokens, placed keys, door pairs, and comment matching.
 * **Sample Packs**:
   * `games/old-house`: Core story regression pack.
   * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, economy, quests, and companion interactions.
@@ -315,5 +315,13 @@ This document records the chronological development history, verified features, 
   * Added unit tests in `internal/pack/pack_test.go`: `TestYAMLCommentPreservation` (rooms list with inline, block, and section comments) and `TestYAMLCommentPreservationMapping` (mapping configuration comments).
   * Verified OLC round-trip compatibility in `internal/olc/olc_test.go` (`TestOLCSavePackRoundTrip`).
   * Updated `AGENTS.md` and `agent/roadmap.md`.
+
+### Review fixes (Oct 13, 2026)
+* Script mentions and reachability match a whole id. `house.hall` does not match `house.hallway`.
+* A key counts as placed from a room, a placed container, or a placed NPC. A container that is not in the world does not count, and a key does not count when it only sits inside the container it locks.
+* Reciprocal keys are compared per opposite direction, so north/south and up/down are different doors.
+* Every distinct Lua body is parsed, including an unsuffixed name whose `.lua` sibling has different text.
+* An item is an orphan key only when its id is `key` or ends in `.key`, `_key`, or `-key`.
+* List comments match `id` before `name`. A wrapped file with several lists uses the list named for that file. A failed read no longer replaces the YAML.
 
 
