@@ -112,10 +112,17 @@ func newTestServerWithEnv(timeLevel, weatherLevel int, initialWeather string, st
 }
 
 func drainLines(sess *Session) []string {
+	if sess == nil {
+		return nil
+	}
+	sess.Flush()
 	var lines []string
 	for {
 		select {
-		case ev := <-sess.Out:
+		case ev, ok := <-sess.Out:
+			if !ok {
+				return lines
+			}
 			if te, ok := ev.(protocol.TextEvent); ok {
 				lines = append(lines, te.Text)
 			}

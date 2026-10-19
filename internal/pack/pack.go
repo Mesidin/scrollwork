@@ -564,12 +564,25 @@ func SpawnPlayer(w *world.World, p *Pack, name, raceID, roleID string) *world.En
 	if name == "" {
 		name = "you"
 	}
+	id := world.ID("player")
+	if w.Get(id) != nil {
+		id = world.ID("player." + strings.ToLower(name))
+		count := 1
+		for w.Get(id) != nil {
+			count++
+			id = world.ID(fmt.Sprintf("player.%s-%d", strings.ToLower(name), count))
+		}
+	}
+	long := "That's you."
+	if name != "you" {
+		long = fmt.Sprintf("%s is here.", name)
+	}
 	e := &world.Entity{
-		ID:       "player",
+		ID:       id,
 		Kind:     world.KindPlayer,
 		Name:     name,
 		Short:    name,
-		Long:     "That's you.",
+		Long:     long,
 		Keywords: []string{"me", "self", strings.ToLower(name)},
 	}
 	rpg.ApplyDefaults(e, p.RPG)
@@ -593,7 +606,9 @@ func SpawnPlayer(w *world.World, p *Pack, name, raceID, roleID string) *world.En
 		}
 	}
 	w.Add(e)
-	w.PlayerID = e.ID
+	if w.PlayerID == "" {
+		w.PlayerID = e.ID
+	}
 	if w.StartRoom != "" {
 		_ = w.Move(e.ID, w.StartRoom)
 	}

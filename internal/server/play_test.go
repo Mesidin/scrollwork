@@ -11,9 +11,16 @@ import (
 )
 
 func drain(s *Server) {
+	if s == nil || s.Session == nil {
+		return
+	}
+	s.Session.Flush()
 	for {
 		select {
-		case <-s.Session.Out:
+		case _, ok := <-s.Session.Out:
+			if !ok {
+				return
+			}
 		default:
 			return
 		}

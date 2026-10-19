@@ -30,18 +30,21 @@ type Context struct {
 	RNG     *rand.Rand
 	Env     *weather.Environment
 
-	Tell          func(channel protocol.Channel, text string)
-	Quit          func()
-	SaveSnap      func(slot string) error
-	LoadSnap      func(slot string) error
-	SavePack      func() error
-	ReloadScripts func() error
-	StartFight    func(mob *world.Entity)
-	Assist        func(target *world.Entity, leaderAttacking bool)
-	BuildWalk     *bool
-	OnMoveFail    func(dir string) bool // buildwalk hook; return true if handled
-	After         func()                // push UI
-	BeginCapture  func(done func(text string))
+	Tell           func(channel protocol.Channel, text string)
+	TellRoom       func(room *world.Entity, channel protocol.Channel, text string, except ...*world.Entity)
+	OnMove         func(actor, old, dest *world.Entity, dir string)
+	OnFollowerMove func(follower, old, dest, leader *world.Entity, dir string)
+	Quit           func()
+	SaveSnap       func(slot string) error
+	LoadSnap       func(slot string) error
+	SavePack       func() error
+	ReloadScripts  func() error
+	StartFight     func(mob *world.Entity)
+	Assist         func(target *world.Entity, leaderAttacking bool)
+	BuildWalk      *bool
+	OnMoveFail     func(dir string) bool // buildwalk hook; return true if handled
+	After          func()                // push UI
+	BeginCapture   func(done func(text string))
 }
 
 func (c *Context) Print(format string, args ...any) {
@@ -1151,6 +1154,12 @@ func say(c *Context, p Parsed) {
 		return
 	}
 	c.Say("You say, \"%s\"", p.Rest)
+	if c.TellRoom != nil && c.Actor != nil {
+		room := c.World.RoomOf(c.Actor)
+		if room != nil {
+			c.TellRoom(room, protocol.ChanSay, fmt.Sprintf("%s says, \"%s\"", c.Actor.CapDisplay(), p.Rest), c.Actor)
+		}
+	}
 }
 
 func emote(c *Context, p Parsed) {
@@ -1158,7 +1167,14 @@ func emote(c *Context, p Parsed) {
 		c.Print("Emote what?")
 		return
 	}
-	c.Say("%s %s", c.Actor.Name, p.Rest)
+	text := fmt.Sprintf("%s %s", c.Actor.CapDisplay(), p.Rest)
+	c.Tell(protocol.ChanNarrative, text)
+	if c.TellRoom != nil && c.Actor != nil {
+		room := c.World.RoomOf(c.Actor)
+		if room != nil {
+			c.TellRoom(room, protocol.ChanNarrative, text, c.Actor)
+		}
+	}
 }
 
 func talk(c *Context, p Parsed) {
@@ -1556,9 +1572,28 @@ func move(c *Context, dir string) {
 		return
 	}
 	old := room
+
+	if c.TellRoom != nil && c.Actor != nil {
+		c.TellRoom(old, protocol.ChanNarrative, fmt.Sprintf("%s leaves %s.", c.Actor.CapDisplay(), dir), c.Actor)
+	}
+
 	_ = c.World.Move(c.Actor.ID, dest.ID)
+
+	if c.TellRoom != nil && c.Actor != nil {
+		opp := world.Opposite(dir)
+		arriveMsg := fmt.Sprintf("%s arrives.", c.Actor.CapDisplay())
+		if opp != "" {
+			arriveMsg = fmt.Sprintf("%s arrives from %s.", c.Actor.CapDisplay(), opp)
+		}
+		c.TellRoom(dest, protocol.ChanNarrative, arriveMsg, c.Actor)
+	}
+
 	Arrive(c, old, dest)
 	moveFollowers(c, c.Actor, old, dest, dir)
+
+	if c.OnMove != nil && c.Actor != nil {
+		c.OnMove(c.Actor, old, dest, dir)
+	}
 }
 
 // Arrive runs the leave and enter hooks after the actor is already in dest.
@@ -2932,6 +2967,13 @@ func moveFollowers(c *Context, leader, old, dest *world.Entity, dir string) {
 		}
 		if c.Actor != nil && hop.Leader != nil && hop.Leader.ID == c.Actor.ID {
 			c.Print("%s", FollowsYou(f, dir))
+		}
+		if f.Kind == world.KindPlayer && c.OnFollowerMove != nil {
+			c.OnFollowerMove(f, old, dest, hop.Leader, dir)
+			continue
+		}
+		if c.OnFollowerMove != nil {
+			c.OnFollowerMove(f, old, dest, hop.Leader, dir)
 		}
 		if c.Scripts != nil {
 			_, _ = c.Scripts.Call("on_leave", f, old)

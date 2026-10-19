@@ -107,8 +107,10 @@ Status Legend:
 
 ---
 
-## 7. Networking & Multiplayer *(See architectural spec: [`features/multiplayer.md`](features/multiplayer.md))*
+## 7. Networking & Multiplayer *(Build guide: [`features/multiplayer.md`](features/multiplayer.md))*
 
-* [ ] **Multi-Session Core Engine**: Multi-session management in `internal/server`, serialized command loop, and room/global broadcast channels (`say`, `emote`, `tell`, `who`, `gossip`).
-* [ ] **Network Gateways & Port Binding**: Bind `internal/server` protocol sessions to Telnet (ANSI text) and structured protocol streaming (TCP/WebSocket for Bubble Tea remote clients).
-* [ ] **Account & Persistence Layer**: User credentials, character selection/creation, isolated per-player saves, and link-dead grace periods.
+* [x] **Stage 1 — Who hears an event**: `sendTo` / `sendRoom`, per-player room and vitals pushes, actor passed into combat and Lua. `say`, `emote`, and leave/arrive. Two sessions in one process. Old House tests stay green. Review fixes: side queue, per-session quit, companion AI, follower broadcasts, one enter, death credit and panes, private combat lines marked at the call.
+* [ ] **Stage 2 — Command queue**: One server channel for connect, disconnect, and input. One command per session per tick. `tell`, `who`, `gossip`, and `party`. `kill` on a player refuses.
+* [ ] **Stage 3 — Framed protocol**: `serve` on localhost, play only. `connect` renders the same panes. Length-prefixed JSON with a type field.
+* [ ] **Stage 4 — Telnet**: ANSI view of those events on port 4023. IAC-aware reader. Password echo suppressed only at login.
+* [ ] **Stage 5 — Accounts and saves**: Account, then character. Paired `players/*.json` and `world.json` beside the existing slot snapshots. Link-dead and combat `quit` share one grace period. Server chargen for Telnet.

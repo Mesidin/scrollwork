@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"sudengine/internal/combat"
@@ -27,32 +28,251 @@ type capture struct {
 }
 
 type Session struct {
-	ID        string
-	Mode      protocol.Mode
-	PlayerID  world.ID
-	Out       chan protocol.Event
-	In        chan string
-	BuildWalk bool
-	quit      bool
-	cap       *capture
+	ID           string
+	Mode         protocol.Mode
+	PlayerID     world.ID
+	Out          chan protocol.Event
+	In           chan string
+	BuildWalk    bool
+	quit         bool
+	cap          *capture
+	mu           sync.Mutex
+	stalledTicks int
+	pending      []protocol.Event
+	closed       bool
 }
 
-func (s *Session) Send(ev protocol.Event) {
-	select {
-	case s.Out <- ev:
+func isCoalescable(ev protocol.Event) bool {
+	switch ev.(type) {
+	case protocol.VitalsEvent, protocol.MapEvent, protocol.CombatEvent, protocol.PromptEvent:
+		return true
 	default:
-		// drop if client is stalled
+		return false
+	}
+}
+
+func sameEventType(a, b protocol.Event) bool {
+	switch a.(type) {
+	case protocol.VitalsEvent:
+		_, ok := b.(protocol.VitalsEvent)
+		return ok
+	case protocol.MapEvent:
+		_, ok := b.(protocol.MapEvent)
+		return ok
+	case protocol.CombatEvent:
+		_, ok := b.(protocol.CombatEvent)
+		return ok
+	case protocol.PromptEvent:
+		_, ok := b.(protocol.PromptEvent)
+		return ok
+	default:
+		return false
+	}
+}
+
+// Send queues ev for this session. Vitals, map, combat, and prompt events
+// replace an older copy still waiting in the side queue. Room text and
+// command results stay queued. Out is only written, never read, so a client
+// receive cannot reorder the log.
+func (s *Session) Send(ev protocol.Event) {
+	if s == nil || s.Out == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.enqueueLocked(ev)
+	s.flushLocked()
+}
+
+// Flush moves queued events onto Out. The client calls it before each read
+// so a full buffer does not leave narrative stuck until the next Send.
+func (s *Session) Flush() {
+	if s == nil || s.Out == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flushLocked()
+}
+
+// Disconnect queues a final event and ignores later sends. Events already
+// queued, including this one, stay available for Flush.
+func (s *Session) Disconnect(reason string) {
+	if s == nil || s.Out == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.enqueueLocked(protocol.DisconnectEvent{Reason: reason})
+	s.closed = true
+	s.flushLocked()
+}
+
+func (s *Session) Closed() bool {
+	if s == nil {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+func (s *Session) enqueueLocked(ev protocol.Event) {
+	if isCoalescable(ev) {
+		for i := len(s.pending) - 1; i >= 0; i-- {
+			if sameEventType(s.pending[i], ev) {
+				s.pending[i] = ev
+				return
+			}
+		}
+	}
+	s.pending = append(s.pending, ev)
+}
+
+func (s *Session) flushLocked() {
+	if s.Out == nil {
+		return
+	}
+	for len(s.pending) > 0 {
+		select {
+		case s.Out <- s.pending[0]:
+			s.pending = s.pending[1:]
+		default:
+			return
+		}
 	}
 }
 
 type Server struct {
-	Pack    *pack.Pack
-	World   *world.World
-	Scripts *script.Host
-	Combat  *combat.Engine
-	Session *Session
-	Env     *weather.Environment
-	rng     *rand.Rand
+	Pack      *pack.Pack
+	World     *world.World
+	Scripts   *script.Host
+	Combat    *combat.Engine
+	Session   *Session
+	Sessions  map[string]*Session
+	Env       *weather.Environment
+	rng       *rand.Rand
+	localQuit bool
+}
+
+func (s *Server) sessionFor(player *world.Entity) *Session {
+	if player == nil || s == nil {
+		return nil
+	}
+	return s.sessionForID(player.ID)
+}
+
+func (s *Server) sessionForID(playerID world.ID) *Session {
+	if s == nil || playerID == "" {
+		return nil
+	}
+	for _, sess := range s.Sessions {
+		if sess != nil && sess.PlayerID == playerID {
+			return sess
+		}
+	}
+	if s.Session != nil && s.Session.PlayerID == playerID {
+		return s.Session
+	}
+	return nil
+}
+
+func (s *Server) allSessions() []*Session {
+	if s == nil {
+		return nil
+	}
+	if len(s.Sessions) == 0 {
+		if s.Session != nil {
+			return []*Session{s.Session}
+		}
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []*Session
+	for _, sess := range s.Sessions {
+		if sess != nil && !sess.Closed() && !seen[sess.ID] {
+			seen[sess.ID] = true
+			out = append(out, sess)
+		}
+	}
+	if s.Session != nil && !s.Session.Closed() && !seen[s.Session.ID] {
+		out = append(out, s.Session)
+	}
+	return out
+}
+
+func (s *Server) AttachSession(sess *Session) {
+	if s == nil || sess == nil {
+		return
+	}
+	if s.Sessions == nil {
+		s.Sessions = make(map[string]*Session)
+	}
+	s.Sessions[sess.ID] = sess
+}
+
+func (s *Server) SpawnPlayerSession(name, raceID, roleID string) (*Session, *world.Entity) {
+	pl := pack.SpawnPlayer(s.World, s.Pack, name, raceID, roleID)
+	sess := &Session{
+		ID:       name,
+		Mode:     protocol.ModePlay,
+		PlayerID: pl.ID,
+		Out:      make(chan protocol.Event, 128),
+		In:       make(chan string, 32),
+	}
+	s.AttachSession(sess)
+	return sess, pl
+}
+
+func (s *Server) sendTo(player *world.Entity, ev protocol.Event) {
+	if player == nil {
+		return
+	}
+	if sess := s.sessionFor(player); sess != nil {
+		sess.Send(ev)
+	}
+}
+
+func (s *Server) sendRoom(room *world.Entity, except *world.Entity, ev protocol.Event) {
+	var skip []world.ID
+	if except != nil {
+		skip = []world.ID{except.ID}
+	}
+	s.sendRoomSkip(room, skip, ev)
+}
+
+func (s *Server) sendRoomSkip(room *world.Entity, skip []world.ID, ev protocol.Event) {
+	if s == nil || s.World == nil || room == nil {
+		return
+	}
+	skipSet := map[world.ID]bool{}
+	for _, id := range skip {
+		skipSet[id] = true
+	}
+	for _, child := range s.World.Children(room.ID) {
+		if child.Kind == world.KindPlayer && !skipSet[child.ID] {
+			s.sendTo(child, ev)
+		}
+	}
+}
+
+func (s *Server) playerInRoom(room *world.Entity) *world.Entity {
+	if s == nil || s.World == nil || room == nil {
+		return nil
+	}
+	primary := s.Pack.RPG.Primary()
+	for _, child := range s.World.Children(room.ID) {
+		if child.Kind == world.KindPlayer && child.Alive(primary) {
+			return child
+		}
+	}
+	return nil
 }
 
 type Options struct {
@@ -109,12 +329,13 @@ func Launch(opt Options) (*Server, *Session, error) {
 	h := script.New(p.Scripts)
 	h.World = w
 	srv := &Server{
-		Pack:    p,
-		World:   w,
-		Scripts: h,
-		Session: sess,
-		Env:     weather.New(p.Meta.TickMS, p.Time, p.Weather),
-		rng:     rand.New(rand.NewSource(seed)),
+		Pack:     p,
+		World:    w,
+		Scripts:  h,
+		Session:  sess,
+		Sessions: map[string]*Session{sess.ID: sess},
+		Env:      weather.New(p.Meta.TickMS, p.Time, p.Weather),
+		rng:      rand.New(rand.NewSource(seed)),
 	}
 	if w.WeatherState != "" {
 		srv.Env.CurrentWeather = w.WeatherState
@@ -131,10 +352,20 @@ func Launch(opt Options) (*Server, *Session, error) {
 		Primary: p.RPG.Primary(),
 		Every:   p.Meta.CombatEvery,
 		Rules:   &p.RPG,
-		Emit: func(to *world.Entity, channel, text string) {
-			if to != nil && to.ID == sess.PlayerID {
-				sess.Send(protocol.TextEvent{Channel: protocol.Channel(channel), Text: text})
+		Emit: func(to *world.Entity, channel, text string, private bool) {
+			if to == nil {
+				return
 			}
+			ev := protocol.TextEvent{Channel: protocol.Channel(channel), Text: text}
+			if private {
+				srv.sendTo(to, ev)
+				return
+			}
+			if room := w.RoomOf(to); room != nil {
+				srv.sendRoom(room, nil, ev)
+				return
+			}
+			srv.sendTo(to, ev)
 		},
 	}
 	srv.Combat.HitMod = srv.outdoorHitPenalty
@@ -142,15 +373,12 @@ func Launch(opt Options) (*Server, *Session, error) {
 		srv.douseOutdoorFlames()
 	}
 	h.Echo = func(actor *world.Entity, text string) {
-		if actor != nil && actor.ID == sess.PlayerID {
-			sess.Send(protocol.TextEvent{Channel: protocol.ChanNarrative, Text: text})
+		if actor != nil {
+			srv.sendTo(actor, protocol.TextEvent{Channel: protocol.ChanNarrative, Text: text})
 		}
 	}
 	h.EchoRoom = func(room *world.Entity, text string, skip *world.Entity) {
-		pl := w.Player()
-		if pl != nil && w.RoomOf(pl) == room {
-			sess.Send(protocol.TextEvent{Channel: protocol.ChanNarrative, Text: text})
-		}
+		srv.sendRoom(room, skip, protocol.TextEvent{Channel: protocol.ChanNarrative, Text: text})
 	}
 	h.Damage = func(att, def *world.Entity, amount int) {
 		srv.Combat.Damage(w, att, def, amount, "strike")
@@ -173,20 +401,24 @@ func (s *Server) moveEntity(ent, dest *world.Entity) error {
 	if err := s.World.Move(ent.ID, dest.ID); err != nil {
 		return err
 	}
-	player := s.World.Player()
 	changed := old == nil || old.ID != dest.ID
-	if player != nil && changed {
-		movedPlayer := ent.ID == player.ID
-		movedTarget := player.Combat != nil && player.Combat.Target == ent.ID
-		if movedPlayer || movedTarget {
-			endFight(s.World, player)
+	if changed {
+		if ent.Kind == world.KindPlayer {
+			endFight(s.World, ent)
+			if sess := s.sessionFor(ent); sess != nil {
+				commands.Arrive(s.ctx(sess), old, dest)
+			}
 		}
-		if movedPlayer && s.Session != nil {
-			commands.Arrive(s.ctx(), old, dest)
+		for _, e := range s.World.Entities {
+			if e != nil && e.Combat != nil && e.Combat.Target == ent.ID {
+				endFight(s.World, e)
+			}
 		}
-	}
-	if changed && old != nil {
-		s.moveFollowers(ent, old, dest, "")
+		if old != nil {
+			s.moveFollowers(ent, old, dest, "")
+			s.pushRoomIn(old)
+		}
+		s.pushRoomIn(dest)
 	}
 	return nil
 }
@@ -215,13 +447,12 @@ func (s *Server) Run(ctx context.Context) {
 	s.pushUI()
 
 	for {
-		if s.Session.quit {
-			s.Session.Send(protocol.DisconnectEvent{Reason: "quit"})
+		if s.reapQuits() {
 			return
 		}
 		select {
 		case <-ctx.Done():
-			s.Session.Send(protocol.DisconnectEvent{Reason: "shutdown"})
+			s.shutdownSessions("shutdown")
 			return
 		case <-ticker.C:
 			s.tick()
@@ -234,29 +465,81 @@ func (s *Server) Run(ctx context.Context) {
 	}
 }
 
-func (s *Server) greet() {
-	title := s.Pack.Meta.Title
-	s.Session.Send(protocol.TitleEvent{Title: title})
-	s.Session.Send(protocol.ModeEvent{Mode: s.Session.Mode})
-	s.Session.Send(protocol.LayoutEvent{Panes: s.Pack.Meta.UI.Panes})
-	banner := title
-	if s.Session.Mode == protocol.ModeBuild {
-		banner += "  [BUILD]"
+func (s *Server) reapQuits() bool {
+	if s == nil {
+		return false
 	}
-	s.Session.Send(protocol.TextEvent{Channel: protocol.ChanSystem, Text: banner})
-	if s.Session.Mode == protocol.ModePlay {
-		commands.EnterRoom(s.ctx(), true)
-	} else {
-		s.Session.Send(protocol.TextEvent{Channel: protocol.ChanBuild, Text: "Builder mode. The side pane shows the map and dig, desc, save pack. help building"})
-		commands.EnterRoom(s.ctx(), true)
+	var quitting []*Session
+	for _, sess := range s.allSessions() {
+		if sess != nil && sess.quit {
+			quitting = append(quitting, sess)
+		}
+	}
+	for _, sess := range quitting {
+		s.disconnect(sess, "quit")
+	}
+	return s.localQuit
+}
+
+func (s *Server) shutdownSessions(reason string) {
+	for _, sess := range append([]*Session{}, s.allSessions()...) {
+		s.disconnect(sess, reason)
 	}
 }
 
-func (s *Server) ctx() *commands.Context {
-	sess := s.Session
+func (s *Server) disconnect(sess *Session, reason string) {
+	if s == nil || sess == nil {
+		return
+	}
+	if s.Sessions != nil {
+		delete(s.Sessions, sess.ID)
+	}
+	if s.Session == sess {
+		s.localQuit = true
+	}
+	sess.quit = false
+	sess.Disconnect(reason)
+}
+
+func (s *Server) greet(sessions ...*Session) {
+	target := sessions
+	if len(target) == 0 {
+		target = s.allSessions()
+	}
+	for _, sess := range target {
+		title := s.Pack.Meta.Title
+		sess.Send(protocol.TitleEvent{Title: title})
+		sess.Send(protocol.ModeEvent{Mode: sess.Mode})
+		sess.Send(protocol.LayoutEvent{Panes: s.Pack.Meta.UI.Panes})
+		banner := title
+		if sess.Mode == protocol.ModeBuild {
+			banner += "  [BUILD]"
+		}
+		sess.Send(protocol.TextEvent{Channel: protocol.ChanSystem, Text: banner})
+		if sess.Mode == protocol.ModePlay {
+			commands.EnterRoom(s.ctx(sess), true)
+		} else {
+			sess.Send(protocol.TextEvent{Channel: protocol.ChanBuild, Text: "Builder mode. The side pane shows the map and dig, desc, save pack. help building"})
+			commands.EnterRoom(s.ctx(sess), true)
+		}
+	}
+}
+
+func (s *Server) ctx(session ...*Session) *commands.Context {
+	var sess *Session
+	if len(session) > 0 {
+		sess = session[0]
+	}
+	if sess == nil {
+		sess = s.Session
+	}
+	if sess == nil {
+		return nil
+	}
+	actor := s.World.Get(sess.PlayerID)
 	c := &commands.Context{
 		World:     s.World,
-		Actor:     s.World.Get(sess.PlayerID),
+		Actor:     actor,
 		Pack:      s.Pack,
 		Mode:      sess.Mode,
 		Scripts:   s.Scripts,
@@ -266,6 +549,33 @@ func (s *Server) ctx() *commands.Context {
 		BuildWalk: &sess.BuildWalk,
 		Tell: func(ch protocol.Channel, text string) {
 			sess.Send(protocol.TextEvent{Channel: ch, Text: text})
+		},
+		TellRoom: func(room *world.Entity, ch protocol.Channel, text string, except ...*world.Entity) {
+			var exc *world.Entity
+			if len(except) > 0 {
+				exc = except[0]
+			}
+			s.sendRoom(room, exc, protocol.TextEvent{Channel: ch, Text: text})
+		},
+		OnMove: func(act, old, dest *world.Entity, dir string) {
+			if old != nil {
+				s.pushRoomIn(old)
+			}
+			if dest != nil {
+				s.pushRoomIn(dest)
+			}
+		},
+		OnFollowerMove: func(f, old, dest, leader *world.Entity, dir string) {
+			if f.Kind == world.KindPlayer {
+				if sessF := s.sessionFor(f); sessF != nil {
+					sessF.Send(protocol.TextEvent{
+						Channel: protocol.ChanNarrative,
+						Text:    commands.FollowYou(leader, dir),
+					})
+					commands.Arrive(s.ctx(sessF), old, dest)
+					s.pushRoomFor(sessF)
+				}
+			}
 		},
 		Quit: func() { sess.quit = true },
 		SaveSnap: func(slot string) error {
@@ -307,26 +617,21 @@ func (s *Server) ctx() *commands.Context {
 			return s.Pack.WriteWorld()
 		},
 		StartFight: func(mob *world.Entity) {
-			player := s.World.Player()
-			if mob == nil || player == nil || mob.InCombat() || !player.Alive(s.Pack.RPG.Primary()) {
+			if mob == nil || actor == nil || mob.InCombat() || !actor.Alive(s.Pack.RPG.Primary()) {
 				return
 			}
-			s.Combat.Start(mob, player, s.World.Tick)
-			s.Combat.CheckAssists(s.World, player, mob, s.World.Tick, false)
+			s.Combat.Start(mob, actor, s.World.Tick)
+			s.Combat.CheckAssists(s.World, actor, mob, s.World.Tick, false)
 			sess.Send(protocol.TextEvent{
 				Channel: protocol.ChanAlert,
 				Text:    fmt.Sprintf("%s attacks you!", mob.CapDisplay()),
 			})
 		},
 		Assist: func(target *world.Entity, leaderAttacking bool) {
-			if target == nil || s.World == nil {
+			if target == nil || s.World == nil || actor == nil {
 				return
 			}
-			player := s.World.Player()
-			if player == nil {
-				return
-			}
-			s.Combat.CheckAssists(s.World, player, target, s.World.Tick, leaderAttacking)
+			s.Combat.CheckAssists(s.World, actor, target, s.World.Tick, leaderAttacking)
 		},
 		BeginCapture: func(done func(text string)) {
 			sess.cap = &capture{done: done}
@@ -352,42 +657,54 @@ func (s *Server) ctx() *commands.Context {
 }
 
 func (s *Server) handle(line string) {
-	if s.Session.cap != nil {
+	s.handleSession(s.Session, line)
+}
+
+func (s *Server) handleSession(sess *Session, line string) {
+	if sess == nil {
+		return
+	}
+	defer func() {
+		if sess.quit {
+			s.disconnect(sess, "quit")
+		}
+	}()
+	if sess.cap != nil {
 		if strings.TrimSpace(line) == "." {
-			text := strings.Join(s.Session.cap.buf, "\n")
-			done := s.Session.cap.done
-			s.Session.cap = nil
+			text := strings.Join(sess.cap.buf, "\n")
+			done := sess.cap.done
+			sess.cap = nil
 			if done != nil {
 				done(text)
 			}
-			s.pushUI()
+			s.pushUI(sess)
 			return
 		}
-		s.Session.cap.buf = append(s.Session.cap.buf, line)
+		sess.cap.buf = append(sess.cap.buf, line)
 		return
 	}
 	line = strings.TrimSpace(line)
-	c := s.ctx()
+	c := s.ctx(sess)
 	if line == "" {
-		s.pushUI()
+		s.pushUI(sess)
 		return
 	}
 	p := commands.Parse(line, s.Pack.Lexicon.CanonicalVerb)
 	if commands.Dispatch(c, p) {
 		s.afterCommand()
-		s.pushUI()
+		s.pushUI(sess)
 		return
 	}
-	if s.Session.Mode == protocol.ModeBuild {
+	if sess.Mode == protocol.ModeBuild {
 		if h := olc.Lookup(p.Verb); h != nil {
 			h(c, p)
 			s.afterCommand()
-			s.pushUI()
+			s.pushUI(sess)
 			return
 		}
 	}
 	c.Print("I don't understand %q.", p.Verb)
-	s.pushUI()
+	s.pushUI(sess)
 }
 
 func (s *Server) afterCommand() {
@@ -397,6 +714,20 @@ func (s *Server) afterCommand() {
 func (s *Server) tick() {
 	s.World.Tick++
 	now := s.World.Tick
+	var stalled []*Session
+	for _, sess := range s.allSessions() {
+		if sess.Out != nil && cap(sess.Out) > 0 && len(sess.Out) == cap(sess.Out) {
+			sess.stalledTicks++
+			if sess.stalledTicks >= 2 {
+				stalled = append(stalled, sess)
+			}
+		} else {
+			sess.stalledTicks = 0
+		}
+	}
+	for _, sess := range stalled {
+		s.disconnect(sess, "stalled")
+	}
 	s.environment()
 	s.regen()
 	s.ai()
@@ -425,12 +756,13 @@ func (s *Server) processRespawns() {
 				if mob.AI != nil && len(task.Rooms) > 0 {
 					mob.AI.Rooms = append([]world.ID{}, task.Rooms...)
 				}
-				player := s.World.Player()
-				if player != nil && s.World.RoomOf(player) == s.World.Get(task.RoomID) {
-					s.Session.Send(protocol.TextEvent{
+				room := s.World.Get(task.RoomID)
+				if room != nil {
+					s.sendRoom(room, nil, protocol.TextEvent{
 						Channel: protocol.ChanNarrative,
 						Text:    fmt.Sprintf("%s appears.", mob.CapDisplay()),
 					})
+					s.pushRoomIn(room)
 				}
 			}
 		} else {
@@ -455,23 +787,17 @@ func (s *Server) douseOutdoorFlames() {
 	if s == nil || s.Env == nil || s.World == nil || !s.Env.Extinguishes(true) {
 		return
 	}
-	pl := s.World.Player()
-	here := s.World.RoomOf(pl)
-	lostHere := false
 	for _, e := range s.World.Entities {
 		if e.Kind != world.KindRoom || e.Underground() || !e.Outdoor() {
 			continue
 		}
 		gone := s.World.ExtinguishToggleLights(e)
-		if here != nil && e.ID == here.ID && len(gone) > 0 {
-			lostHere = true
+		if len(gone) > 0 {
+			s.sendRoom(e, nil, protocol.TextEvent{
+				Channel: protocol.ChanAlert,
+				Text:    weather.FlameOutLine,
+			})
 		}
-	}
-	if lostHere && s.Session != nil {
-		s.Session.Send(protocol.TextEvent{
-			Channel: protocol.ChanAlert,
-			Text:    weather.FlameOutLine,
-		})
 	}
 }
 
@@ -491,31 +817,33 @@ func (s *Server) environment() {
 	if len(broadcasts) == 0 {
 		return
 	}
-	pl := s.World.Player()
-	if pl == nil {
-		return
-	}
-	room := s.World.RoomOf(pl)
-	if room == nil || room.Underground() {
-		return
-	}
-	isOutdoor := room.Outdoor()
-	isWindowed := room.Windowed()
-
-	for _, b := range broadcasts {
-		var text string
-		if isOutdoor && b.OutdoorText != "" {
-			text = b.OutdoorText
-		} else if isWindowed && b.WindowText != "" {
-			text = b.WindowText
-		} else if !isOutdoor && !isWindowed && b.IndoorText != "" {
-			text = b.IndoorText
+	for _, sess := range s.allSessions() {
+		pl := s.World.Get(sess.PlayerID)
+		if pl == nil {
+			continue
 		}
-		if text != "" {
-			s.Session.Send(protocol.TextEvent{
-				Channel: protocol.ChanAlert,
-				Text:    text,
-			})
+		room := s.World.RoomOf(pl)
+		if room == nil || room.Underground() {
+			continue
+		}
+		isOutdoor := room.Outdoor()
+		isWindowed := room.Windowed()
+
+		for _, b := range broadcasts {
+			var text string
+			if isOutdoor && b.OutdoorText != "" {
+				text = b.OutdoorText
+			} else if isWindowed && b.WindowText != "" {
+				text = b.WindowText
+			} else if !isOutdoor && !isWindowed && b.IndoorText != "" {
+				text = b.IndoorText
+			}
+			if text != "" {
+				sess.Send(protocol.TextEvent{
+					Channel: protocol.ChanAlert,
+					Text:    text,
+				})
+			}
 		}
 	}
 }
@@ -551,7 +879,6 @@ func (s *Server) regen() {
 }
 
 func (s *Server) ai() {
-	player := s.World.Player()
 	primary := s.Pack.RPG.Primary()
 	for _, e := range s.World.Entities {
 		if e.Kind != world.KindMobile || e.AI == nil {
@@ -560,24 +887,23 @@ func (s *Server) ai() {
 		if !e.Alive(primary) {
 			continue
 		}
-		if strings.EqualFold(e.Stance, "stay") || (player != nil && (e.Owner == player.ID || e.Leader == player.ID)) {
-			continue
-		}
 		room := s.World.RoomOf(e)
 		if room == nil {
 			continue
 		}
+		if s.skipWildAI(e) {
+			continue
+		}
+		targetPlayer := s.playerInRoom(room)
 		prof := e.AI.Profile
-		if player != nil && s.World.RoomOf(player) == room {
-			if e.AI.Awake(e) && !e.InCombat() && player.Alive(primary) {
-				s.Combat.Start(e, player, s.World.Tick)
-				s.Combat.CheckAssists(s.World, player, e, s.World.Tick, false)
-				if player.ID == s.Session.PlayerID {
-					s.Session.Send(protocol.TextEvent{
-						Channel: protocol.ChanAlert,
-						Text:    fmt.Sprintf("%s attacks you!", e.CapDisplay()),
-					})
-				}
+		if targetPlayer != nil {
+			if e.AI.Awake(e) && !e.InCombat() && targetPlayer.Alive(primary) {
+				s.Combat.Start(e, targetPlayer, s.World.Tick)
+				s.Combat.CheckAssists(s.World, targetPlayer, e, s.World.Tick, false)
+				s.sendTo(targetPlayer, protocol.TextEvent{
+					Channel: protocol.ChanAlert,
+					Text:    fmt.Sprintf("%s attacks you!", e.CapDisplay()),
+				})
 			}
 			if prof == "coward" {
 				r := e.Res(primary)
@@ -585,15 +911,14 @@ func (s *Server) ai() {
 					for d, ex := range room.Exits {
 						if !ex.Closed {
 							destRoom := s.World.Get(ex.To)
-							watching := player != nil && s.World.RoomOf(player) == room
 							_ = s.World.Move(e.ID, ex.To)
-							if watching {
-								s.Session.Send(protocol.TextEvent{
-									Channel: protocol.ChanNarrative,
-									Text:    fmt.Sprintf("%s flees %s.", e.CapDisplay(), d),
-								})
-							}
+							s.sendRoom(room, nil, protocol.TextEvent{
+								Channel: protocol.ChanNarrative,
+								Text:    fmt.Sprintf("%s flees %s.", e.CapDisplay(), d),
+							})
 							s.moveFollowers(e, room, destRoom, d)
+							s.pushRoomIn(room)
+							s.pushRoomIn(destRoom)
 							break
 						}
 					}
@@ -601,7 +926,7 @@ func (s *Server) ai() {
 			}
 		}
 		if e.InCombat() {
-			s.pursue(e, room, player)
+			s.pursue(e, room)
 			continue
 		}
 		if e.AI.Wander || prof == "wander" {
@@ -628,39 +953,86 @@ func (s *Server) ai() {
 			ex := dirs[s.rng.Intn(len(dirs))]
 			old := room
 			destRoom := s.World.Get(ex.To)
-			wasOld := player != nil && s.World.RoomOf(player) == old
-			wasDest := player != nil && destRoom != nil && s.World.RoomOf(player) == destRoom
 			_ = s.World.Move(e.ID, ex.To)
-			came := s.moveFollowers(e, old, destRoom, ex.Dir)
-			if player != nil && !came {
-				if wasOld {
-					s.Session.Send(protocol.TextEvent{
-						Channel: protocol.ChanNarrative,
-						Text:    fmt.Sprintf("%s leaves %s.", e.CapDisplay(), ex.Dir),
-					})
-				}
-				if wasDest {
-					if e.AI.Awake(e) && player.Alive(primary) && !e.InCombat() {
-						s.Combat.Start(e, player, s.World.Tick)
-						s.Combat.CheckAssists(s.World, player, e, s.World.Tick, false)
-						s.Session.Send(protocol.TextEvent{
-							Channel: protocol.ChanAlert,
-							Text:    fmt.Sprintf("%s arrives — and attacks you!", e.CapDisplay()),
-						})
-					} else {
-						s.Session.Send(protocol.TextEvent{
-							Channel: protocol.ChanNarrative,
-							Text:    fmt.Sprintf("%s arrives.", e.CapDisplay()),
-						})
-					}
-					s.pushRoom()
-				}
+			skip := entityIDs(s.moveFollowers(e, old, destRoom, ex.Dir))
+			s.sendRoom(old, nil, protocol.TextEvent{
+				Channel: protocol.ChanNarrative,
+				Text:    fmt.Sprintf("%s leaves %s.", e.CapDisplay(), ex.Dir),
+			})
+			destPlayer := s.aggroTarget(destRoom, skip)
+			if destPlayer != nil && e.AI.Awake(e) && destPlayer.Alive(primary) && !e.InCombat() {
+				s.Combat.Start(e, destPlayer, s.World.Tick)
+				s.Combat.CheckAssists(s.World, destPlayer, e, s.World.Tick, false)
+				s.sendTo(destPlayer, protocol.TextEvent{
+					Channel: protocol.ChanAlert,
+					Text:    fmt.Sprintf("%s arrives — and attacks you!", e.CapDisplay()),
+				})
+				s.sendRoomSkip(destRoom, append(skip, destPlayer.ID), protocol.TextEvent{
+					Channel: protocol.ChanAlert,
+					Text:    fmt.Sprintf("%s arrives.", e.CapDisplay()),
+				})
+			} else {
+				s.sendRoomSkip(destRoom, skip, protocol.TextEvent{
+					Channel: protocol.ChanNarrative,
+					Text:    fmt.Sprintf("%s arrives.", e.CapDisplay()),
+				})
 			}
+			s.pushRoomIn(old)
+			s.pushRoomIn(destRoom)
 		}
 	}
 }
 
-func (s *Server) pursue(e, room, player *world.Entity) {
+func (s *Server) skipWildAI(e *world.Entity) bool {
+	if e == nil {
+		return false
+	}
+	if strings.EqualFold(e.Stance, "stay") {
+		return true
+	}
+	if s == nil || s.World == nil {
+		return false
+	}
+	if o := s.World.Get(e.Owner); o != nil && o.Kind == world.KindPlayer {
+		return true
+	}
+	if l := s.World.Get(e.Leader); l != nil && l.Kind == world.KindPlayer {
+		return true
+	}
+	return false
+}
+
+func (s *Server) aggroTarget(room *world.Entity, skip []world.ID) *world.Entity {
+	if s == nil || s.World == nil || room == nil {
+		return nil
+	}
+	skipSet := map[world.ID]bool{}
+	for _, id := range skip {
+		skipSet[id] = true
+	}
+	primary := s.Pack.RPG.Primary()
+	for _, child := range s.World.Children(room.ID) {
+		if child.Kind == world.KindPlayer && child.Alive(primary) && !skipSet[child.ID] {
+			return child
+		}
+	}
+	return nil
+}
+
+func entityIDs(ents []*world.Entity) []world.ID {
+	if len(ents) == 0 {
+		return nil
+	}
+	ids := make([]world.ID, 0, len(ents))
+	for _, e := range ents {
+		if e != nil {
+			ids = append(ids, e.ID)
+		}
+	}
+	return ids
+}
+
+func (s *Server) pursue(e, room *world.Entity) {
 	if e == nil || e.AI == nil || !e.AI.Pursue || e.Combat == nil {
 		return
 	}
@@ -685,61 +1057,66 @@ func (s *Server) pursue(e, room, player *world.Entity) {
 		return
 	}
 	old := room
-	wasOld := player != nil && s.World.RoomOf(player) == old
-	wasDest := player != nil && dest != nil && s.World.RoomOf(player) == dest
 	_ = s.World.Move(e.ID, step.To)
-	came := s.moveFollowers(e, old, dest, step.Dir)
-	if player == nil || came {
-		return
-	}
-	if wasOld {
-		s.Session.Send(protocol.TextEvent{
-			Channel: protocol.ChanNarrative,
-			Text:    fmt.Sprintf("%s leaves %s.", e.CapDisplay(), step.Dir),
-		})
-	}
-	if wasDest {
-		s.Session.Send(protocol.TextEvent{
+	skip := entityIDs(s.moveFollowers(e, old, dest, step.Dir))
+	s.sendRoom(old, nil, protocol.TextEvent{
+		Channel: protocol.ChanNarrative,
+		Text:    fmt.Sprintf("%s leaves %s.", e.CapDisplay(), step.Dir),
+	})
+	if tgt.Kind == world.KindPlayer {
+		s.sendTo(tgt, protocol.TextEvent{
 			Channel: protocol.ChanAlert,
 			Text:    fmt.Sprintf("%s follows you.", e.CapDisplay()),
 		})
-		s.pushRoom()
+		s.sendRoomSkip(dest, append(skip, tgt.ID), protocol.TextEvent{
+			Channel: protocol.ChanAlert,
+			Text:    fmt.Sprintf("%s arrives.", e.CapDisplay()),
+		})
+	} else {
+		s.sendRoomSkip(dest, skip, protocol.TextEvent{
+			Channel: protocol.ChanAlert,
+			Text:    fmt.Sprintf("%s arrives.", e.CapDisplay()),
+		})
 	}
+	s.pushRoomIn(old)
+	s.pushRoomIn(dest)
 }
 
-func (s *Server) moveFollowers(leader, old, dest *world.Entity, dir string) bool {
+func (s *Server) moveFollowers(leader, old, dest *world.Entity, dir string) []*world.Entity {
 	if s == nil || s.World == nil || leader == nil || old == nil || dest == nil {
-		return false
+		return nil
 	}
-	player := s.World.Player()
-	came := false
+	var moved []*world.Entity
 	for _, hop := range s.World.PullFollowers(leader, old, dest) {
 		f := hop.Follower
 		if f == nil {
 			continue
 		}
-		if player != nil && f.ID == player.ID {
-			came = true
-			s.Session.Send(protocol.TextEvent{
-				Channel: protocol.ChanNarrative,
-				Text:    commands.FollowYou(hop.Leader, dir),
-			})
-			commands.Arrive(s.ctx(), old, dest)
-			s.pushRoom()
+		moved = append(moved, f)
+		if f.Kind == world.KindPlayer {
+			if sess := s.sessionFor(f); sess != nil {
+				sess.Send(protocol.TextEvent{
+					Channel: protocol.ChanNarrative,
+					Text:    commands.FollowYou(hop.Leader, dir),
+				})
+				commands.Arrive(s.ctx(sess), old, dest)
+			}
 			continue
 		}
-		if player != nil && hop.Leader != nil && hop.Leader.ID == player.ID {
-			s.Session.Send(protocol.TextEvent{
-				Channel: protocol.ChanNarrative,
-				Text:    commands.FollowsYou(f, dir),
-			})
+		if hop.Leader != nil && hop.Leader.Kind == world.KindPlayer {
+			if sess := s.sessionFor(hop.Leader); sess != nil {
+				sess.Send(protocol.TextEvent{
+					Channel: protocol.ChanNarrative,
+					Text:    commands.FollowsYou(f, dir),
+				})
+			}
 		}
 		if s.Scripts != nil {
 			_, _ = s.Scripts.Call("on_leave", f, old)
 			_, _ = s.Scripts.Call("on_enter", f, dest)
 		}
 	}
-	return came
+	return moved
 }
 
 // corpseID keeps the mob's dotted id out of the corpse id, so the last
@@ -753,9 +1130,78 @@ type allyCredit struct {
 	owner, leader, party world.ID
 }
 
+func (s *Server) creditPlayer(id world.ID, credit map[world.ID]allyCredit) *world.Entity {
+	seen := map[world.ID]bool{}
+	var walk func(world.ID) *world.Entity
+	walk = func(id world.ID) *world.Entity {
+		if id == "" || seen[id] {
+			return nil
+		}
+		seen[id] = true
+		if e := s.World.Get(id); e != nil && e.Kind == world.KindPlayer {
+			return e
+		}
+		c, ok := credit[id]
+		if !ok {
+			return nil
+		}
+		if p := walk(c.owner); p != nil {
+			return p
+		}
+		if p := walk(c.leader); p != nil {
+			return p
+		}
+		if c.party == "" {
+			return nil
+		}
+		if p := walk(c.party); p != nil {
+			return p
+		}
+		return s.playerSharingParty(c.party)
+	}
+	return walk(id)
+}
+
+// solePlayer is the only character in a single-player world. An unattributed
+// death can credit that character. A second character means nobody is assumed.
+func (s *Server) solePlayer() *world.Entity {
+	if s == nil || s.World == nil {
+		return nil
+	}
+	var found *world.Entity
+	for _, e := range s.World.Entities {
+		if e == nil || e.Kind != world.KindPlayer {
+			continue
+		}
+		if found != nil {
+			return nil
+		}
+		found = e
+	}
+	return found
+}
+
+func (s *Server) playerSharingParty(partyID world.ID) *world.Entity {
+	if s == nil || s.World == nil || partyID == "" {
+		return nil
+	}
+	var fallback *world.Entity
+	for _, e := range s.World.Entities {
+		if e == nil || e.Kind != world.KindPlayer || e.PartyLeader != partyID {
+			continue
+		}
+		if e.ID == partyID {
+			return e
+		}
+		if fallback == nil || e.ID < fallback.ID {
+			fallback = e
+		}
+	}
+	return fallback
+}
+
 func (s *Server) reapDead() {
 	primary := s.Pack.RPG.Primary()
-	player := s.World.Player()
 	credit := map[world.ID]allyCredit{}
 	for id, e := range s.World.Entities {
 		if e == nil {
@@ -786,33 +1232,30 @@ func (s *Server) reapDead() {
 		}
 		e.Followers = nil
 		room := s.World.RoomOf(e)
-		_, _ = s.Scripts.Call("on_death", player, e)
-		isPlayerKill := false
-		if player != nil && e.SlainBy == player.ID {
-			isPlayerKill = true
-		} else if player != nil && e.SlainBy != "" {
-			if k, ok := credit[e.SlainBy]; ok {
-				isPlayerKill = k.owner == player.ID || k.leader == player.ID ||
-					(player.PartyLeader != "" && k.party == player.PartyLeader)
-			}
+		killer := s.creditPlayer(e.SlainBy, credit)
+		unattributed := killer == nil && e.SlainBy == ""
+		if unattributed {
+			killer = s.solePlayer()
 		}
+		_, _ = s.Scripts.Call("on_death", killer, e)
+		isPlayerKill := killer != nil && !unattributed
 		if isPlayerKill && s.Pack != nil && len(s.Pack.Quests) > 0 {
-			notices := quest.UpdateKill(player, e, s.Pack.Quests, s.World)
+			notices := quest.UpdateKill(killer, e, s.Pack.Quests, s.World)
 			for _, n := range notices {
-				s.Session.Send(protocol.TextEvent{Channel: protocol.ChanAlert, Text: n.String()})
+				s.sendTo(killer, protocol.TextEvent{Channel: protocol.ChanAlert, Text: n.String()})
 			}
 		}
-		if (isPlayerKill || e.SlainBy == "") && player != nil && e.XP > 0 && s.Pack.RPG.Advancement.On() {
-			s.Session.Send(protocol.TextEvent{
+		if killer != nil && (isPlayerKill || unattributed) && e.XP > 0 && s.Pack.RPG.Advancement.On() {
+			s.sendTo(killer, protocol.TextEvent{
 				Channel: protocol.ChanNarrative,
 				Text:    fmt.Sprintf("You gain %d experience.", e.XP),
 			})
-			msgs := s.Pack.RPG.Grant(player, e.XP)
+			msgs := s.Pack.RPG.Grant(killer, e.XP)
 			for _, msg := range msgs {
-				s.Session.Send(protocol.TextEvent{Channel: protocol.ChanAlert, Text: msg})
+				s.sendTo(killer, protocol.TextEvent{Channel: protocol.ChanAlert, Text: msg})
 			}
 			if len(msgs) > 0 {
-				s.Session.Send(protocol.TextEvent{
+				s.sendTo(killer, protocol.TextEvent{
 					Channel: protocol.ChanSystem,
 					Text:    "improve <skill> spends a skill point. raise <attribute> spends an attribute point. train <skill> pays a trainer.",
 				})
@@ -888,30 +1331,65 @@ func (s *Server) reapDead() {
 		}
 		s.World.Destroy(id)
 	}
-	if player != nil && !player.Alive(primary) {
-		s.Session.Send(protocol.TextEvent{Channel: protocol.ChanAlert, Text: "You die. The world fades... then you wake at the start."})
-		pct := s.Pack.RPG.Death.PlayerPct()
-		max := player.Res(primary).Max
-		player.SetRes(primary, world.Resource{Current: max * pct / 100, Max: max})
-		if player.Res(primary).Current < 1 && max > 0 {
-			player.SetRes(primary, world.Resource{Current: 1, Max: max})
+	for _, ent := range s.World.Entities {
+		if ent == nil || ent.Kind != world.KindPlayer || ent.Alive(primary) {
+			continue
 		}
-		if player.Combat != nil {
-			player.Combat.Target = ""
+		pDead := ent
+		sess := s.sessionFor(pDead)
+		if sess != nil {
+			sess.Send(protocol.TextEvent{Channel: protocol.ChanAlert, Text: "You die. The world fades... then you wake at the start."})
+		}
+		fall := s.World.RoomOf(pDead)
+		if fall != nil {
+			s.sendRoom(fall, pDead, protocol.TextEvent{
+				Channel: protocol.ChanNarrative,
+				Text:    fmt.Sprintf("%s collapses.", pDead.CapDisplay()),
+			})
+		}
+		pct := s.Pack.RPG.Death.PlayerPct()
+		max := pDead.Res(primary).Max
+		pDead.SetRes(primary, world.Resource{Current: max * pct / 100, Max: max})
+		if pDead.Res(primary).Current < 1 && max > 0 {
+			pDead.SetRes(primary, world.Resource{Current: 1, Max: max})
+		}
+		if pDead.Combat != nil {
+			pDead.Combat.Target = ""
 		}
 		if !s.Pack.RPG.Death.PlayerKeepItems() {
-			room := s.World.RoomOf(player)
-			if room != nil {
-				for _, it := range append([]*world.Entity{}, s.World.Children(player.ID)...) {
-					_ = s.World.Move(it.ID, room.ID)
+			if fall != nil {
+				for _, it := range append([]*world.Entity{}, s.World.Children(pDead.ID)...) {
+					_ = s.World.Move(it.ID, fall.ID)
 				}
 			}
 		}
-		if s.World.StartRoom != "" {
-			_ = s.World.Move(player.ID, s.World.StartRoom)
+		if fall != nil {
+			s.pushRoomIn(fall)
 		}
-		s.recallCompanions(player)
-		commands.EnterRoom(s.ctx(), true)
+		var start *world.Entity
+		if s.World.StartRoom != "" {
+			start = s.World.Get(s.World.StartRoom)
+			if start != nil {
+				_ = s.World.Move(pDead.ID, start.ID)
+			}
+		}
+		s.recallCompanions(pDead)
+		if start != nil && (fall == nil || start.ID != fall.ID) {
+			s.sendRoom(start, pDead, protocol.TextEvent{
+				Channel: protocol.ChanNarrative,
+				Text:    fmt.Sprintf("%s arrives.", pDead.CapDisplay()),
+			})
+		}
+		if fall != nil {
+			s.pushRoomIn(fall)
+		}
+		if start != nil && (fall == nil || start.ID != fall.ID) {
+			s.pushRoomIn(start)
+		}
+		if sess != nil {
+			commands.EnterRoom(s.ctx(sess), true)
+			s.pushUI(sess)
+		}
 	}
 }
 
@@ -937,7 +1415,7 @@ func (s *Server) recallCompanions(player *world.Entity) {
 		}
 		if strings.EqualFold(e.Stance, "stay") {
 			s.World.StopFollowing(e)
-			s.Session.Send(protocol.TextEvent{
+			s.sendTo(player, protocol.TextEvent{
 				Channel: protocol.ChanNarrative,
 				Text:    fmt.Sprintf("%s stays behind.", e.CapDisplay()),
 			})
@@ -947,24 +1425,58 @@ func (s *Server) recallCompanions(player *world.Entity) {
 		if s.World.RoomOf(e) != start {
 			_ = s.World.Move(e.ID, start.ID)
 		}
-		s.Session.Send(protocol.TextEvent{
+		s.sendTo(player, protocol.TextEvent{
 			Channel: protocol.ChanNarrative,
 			Text:    fmt.Sprintf("%s is with you.", e.CapDisplay()),
 		})
 	}
 }
 
-func (s *Server) pushUI() {
-	s.pushRoom()
-	s.pushVitals()
-	s.pushInv()
-	s.pushMap()
-	s.pushCombat()
-	s.pushPrompt()
+func (s *Server) pushUI(sessions ...*Session) {
+	target := sessions
+	if len(target) == 0 {
+		target = s.allSessions()
+	}
+	for _, sess := range target {
+		s.pushRoomFor(sess)
+		s.pushVitalsFor(sess)
+		s.pushInvFor(sess)
+		s.pushMapFor(sess)
+		s.pushCombatFor(sess)
+		s.pushPromptFor(sess)
+	}
 }
 
-func (s *Server) pushRoom() {
-	pl := s.World.Player()
+func (s *Server) pushRoom(sessions ...*Session) {
+	target := sessions
+	if len(target) == 0 {
+		target = s.allSessions()
+	}
+	for _, sess := range target {
+		s.pushRoomFor(sess)
+	}
+}
+
+func (s *Server) pushRoomIn(room *world.Entity) {
+	if s == nil || s.World == nil || room == nil {
+		return
+	}
+	for _, sess := range s.allSessions() {
+		pl := s.World.Get(sess.PlayerID)
+		if pl != nil && s.World.RoomOf(pl) == room {
+			s.pushRoomFor(sess)
+		}
+	}
+}
+
+func (s *Server) pushRoomFor(sess *Session) {
+	if sess == nil {
+		return
+	}
+	pl := s.World.Get(sess.PlayerID)
+	if pl == nil {
+		return
+	}
 	room := s.World.RoomOf(pl)
 	if room == nil {
 		return
@@ -989,18 +1501,39 @@ func (s *Server) pushRoom() {
 				continue
 			}
 			switch e.Kind {
-			case world.KindMobile, world.KindPlayer:
+			case world.KindMobile:
 				ev.Occupants = append(ev.Occupants, e.Display())
+			case world.KindPlayer:
+				name := e.Display()
+				if e.InCombat() {
+					name += " (fighting)"
+				} else if e.HasFlag("linkdead") {
+					name += " (linkdead)"
+				}
+				ev.Occupants = append(ev.Occupants, name)
 			case world.KindItem, world.KindScenery:
 				ev.Items = append(ev.Items, e.Display())
 			}
 		}
 	}
-	s.Session.Send(ev)
+	sess.Send(ev)
 }
 
-func (s *Server) pushVitals() {
-	pl := s.World.Player()
+func (s *Server) pushVitals(sessions ...*Session) {
+	target := sessions
+	if len(target) == 0 {
+		target = s.allSessions()
+	}
+	for _, sess := range target {
+		s.pushVitalsFor(sess)
+	}
+}
+
+func (s *Server) pushVitalsFor(sess *Session) {
+	if sess == nil {
+		return
+	}
+	pl := s.World.Get(sess.PlayerID)
 	if pl == nil {
 		return
 	}
@@ -1025,11 +1558,24 @@ func (s *Server) pushVitals() {
 		}
 	}
 	sort.Strings(ev.Flags)
-	s.Session.Send(ev)
+	sess.Send(ev)
 }
 
-func (s *Server) pushInv() {
-	pl := s.World.Player()
+func (s *Server) pushInv(sessions ...*Session) {
+	target := sessions
+	if len(target) == 0 {
+		target = s.allSessions()
+	}
+	for _, sess := range target {
+		s.pushInvFor(sess)
+	}
+}
+
+func (s *Server) pushInvFor(sess *Session) {
+	if sess == nil {
+		return
+	}
+	pl := s.World.Get(sess.PlayerID)
 	if pl == nil {
 		return
 	}
@@ -1045,11 +1591,24 @@ func (s *Server) pushInv() {
 		}
 		ev.Equipment = append(ev.Equipment, protocol.EquipView{Slot: slot, Item: name})
 	}
-	s.Session.Send(ev)
+	sess.Send(ev)
 }
 
-func (s *Server) pushMap() {
-	pl := s.World.Player()
+func (s *Server) pushMap(sessions ...*Session) {
+	target := sessions
+	if len(target) == 0 {
+		target = s.allSessions()
+	}
+	for _, sess := range target {
+		s.pushMapFor(sess)
+	}
+}
+
+func (s *Server) pushMapFor(sess *Session) {
+	if sess == nil {
+		return
+	}
+	pl := s.World.Get(sess.PlayerID)
 	if pl == nil {
 		return
 	}
@@ -1074,11 +1633,24 @@ func (s *Server) pushMap() {
 	if room != nil {
 		ev.Text = render.Automap(s.World, pl, 2)
 	}
-	s.Session.Send(ev)
+	sess.Send(ev)
 }
 
-func (s *Server) pushCombat() {
-	pl := s.World.Player()
+func (s *Server) pushCombat(sessions ...*Session) {
+	target := sessions
+	if len(target) == 0 {
+		target = s.allSessions()
+	}
+	for _, sess := range target {
+		s.pushCombatFor(sess)
+	}
+}
+
+func (s *Server) pushCombatFor(sess *Session) {
+	if sess == nil {
+		return
+	}
+	pl := s.World.Get(sess.PlayerID)
 	if pl == nil {
 		return
 	}
@@ -1097,11 +1669,27 @@ func (s *Server) pushCombat() {
 		add(pl)
 		add(s.World.Get(pl.Combat.Target))
 	}
-	s.Session.Send(ev)
+	sess.Send(ev)
 }
 
-func (s *Server) pushPrompt() {
-	pl := s.World.Player()
+func (s *Server) pushPrompt(sessions ...*Session) {
+	target := sessions
+	if len(target) == 0 {
+		target = s.allSessions()
+	}
+	for _, sess := range target {
+		s.pushPromptFor(sess)
+	}
+}
+
+func (s *Server) pushPromptFor(sess *Session) {
+	if sess == nil {
+		return
+	}
+	pl := s.World.Get(sess.PlayerID)
+	if pl == nil {
+		return
+	}
 	room := s.World.RoomOf(pl)
 	name := ""
 	if room != nil {
@@ -1111,18 +1699,18 @@ func (s *Server) pushPrompt() {
 	r := pl.Res(primary)
 	label := s.Pack.Lexicon.Label(primary)
 	mode := ""
-	if s.Session.Mode == protocol.ModeBuild {
+	if sess.Mode == protocol.ModeBuild {
 		mode = " [BUILD]"
 	}
 	status := fmt.Sprintf("%s:%d/%d", label, r.Current, r.Max)
 	if s.Pack.RPG.Pile(primary) {
 		status = fmt.Sprintf("%s:%d", label, r.Current)
 	}
-	s.Session.Send(protocol.PromptEvent{
+	sess.Send(protocol.PromptEvent{
 		Text:   fmt.Sprintf("%s %s%s > ", name, status, mode),
 		Room:   name,
 		Status: status,
-		Build:  s.Session.Mode == protocol.ModeBuild,
+		Build:  sess.Mode == protocol.ModeBuild,
 	})
 }
 
@@ -1136,10 +1724,27 @@ func abs(n int) int {
 // HandleLine is for tests: process one command and drain events.
 func (s *Server) HandleLine(line string) []protocol.Event {
 	s.handle(line)
+	return takeEvents(s.Session)
+}
+
+// HandleSessionLine is for tests: process one command for a given session and drain its events.
+func (s *Server) HandleSessionLine(sess *Session, line string) []protocol.Event {
+	s.handleSession(sess, line)
+	return takeEvents(sess)
+}
+
+func takeEvents(sess *Session) []protocol.Event {
+	if sess == nil {
+		return nil
+	}
+	sess.Flush()
 	var out []protocol.Event
 	for {
 		select {
-		case ev := <-s.Session.Out:
+		case ev, ok := <-sess.Out:
+			if !ok {
+				return out
+			}
 			out = append(out, ev)
 		default:
 			return out

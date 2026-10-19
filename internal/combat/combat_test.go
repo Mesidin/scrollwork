@@ -22,7 +22,7 @@ func TestHitModCanTurnAHitIntoAMiss(t *testing.T) {
 		Rules: &rpg.Schema{Checks: map[string]rpg.Check{
 			"hit": {Roll: "6", Difficulty: 6},
 		}},
-		Emit: func(_ *world.Entity, _ string, text string) {
+		Emit: func(_ *world.Entity, _ string, text string, _ bool) {
 			lines = append(lines, text)
 		},
 	}

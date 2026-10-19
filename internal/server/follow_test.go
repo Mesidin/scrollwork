@@ -321,7 +321,7 @@ func TestPlayerFollowArrives(t *testing.T) {
 	}
 	_ = srv.World.StartFollowing(player, guide)
 	_ = srv.World.Move(guide.ID, lane.ID)
-	if !srv.moveFollowers(guide, old, lane, "east") {
+	if len(srv.moveFollowers(guide, old, lane, "east")) == 0 {
 		t.Fatal("expected the player to follow")
 	}
 	if player.Parent != lane.ID {

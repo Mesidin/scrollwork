@@ -695,6 +695,7 @@ func waitEvent(sess *server.Session) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
+		sess.Flush()
 		ev, ok := <-sess.Out
 		if !ok {
 			return protocol.DisconnectEvent{Reason: "closed"}

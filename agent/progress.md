@@ -4,11 +4,11 @@ This document records the chronological development history, verified features, 
 
 ---
 
-## Current Status (as of Oct 13, 2026)
+## Current Status (as of Oct 19, 2026)
 
 * **Engine**: Go 1.22+ Bubble Tea MUD engine with runtime YAML+Lua pack loading.
 * **Test Suite**: `go test ./...` passing across all packages.
-* **Working Tree**: Pack integrity and YAML comment preservation, including the Oct 13 review fixes for script tokens, placed keys, door pairs, and comment matching.
+* **Working Tree**: Stage 1 multiplayer is in the tree, including the Oct 19 review fixes for the output queue, session quit, companion AI, room broadcasts, one room entry, and death credit. The multiplayer guide rewrite is in the same tree.
 * **Sample Packs**:
   * `games/old-house`: Core story regression pack.
   * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, economy, quests, and companion interactions.
@@ -323,5 +323,37 @@ This document records the chronological development history, verified features, 
 * Every distinct Lua body is parsed, including an unsuffixed name whose `.lua` sibling has different text.
 * An item is an orphan key only when its id is `key` or ends in `.key`, `_key`, or `-key`.
 * List comments match `id` before `name`. A wrapped file with several lists uses the list named for that file. A failed read no longer replaces the YAML.
+
+### Multiplayer guide (Oct 13, 2026)
+* Rewrote `agent/features/multiplayer.md` as the build order. Stage 1 is who hears an event. Sockets, Telnet, and accounts come after a two-session test. `play` keeps full JSON snapshots. A shared world save is a paired write of `players/*.json` and `world.json`. Roadmap section 7 matches those five stages.
+
+## Milestone 15: Multiplayer Stage 1 — Who hears an event (Oct 16, 2026)
+* **Session Map & Routing (`internal/server/server.go`)**:
+  * Added `Sessions map[string]*Session` to `Server`, initialized with the local session on `Launch`.
+  * Added helper methods `sendTo(player, ev)` and `sendRoom(room, except, ev)`.
+  * Output queue: vitals, map, combat, and prompt coalesce in a side queue. `Send` never reads `Out`. Room text and command results stay queued. A session whose `Out` stays full for two ticks is disconnected. `Run` returns only when the local session leaves.
+* **Per-Player UI Pushes**:
+  * Refactored `pushRoom`, `pushVitals`, `pushInv`, `pushMap`, `pushCombat`, and `pushPrompt` to accept variadic target sessions.
+  * `pushRoomFor` renders occupants with ` (fighting)` and ` (linkdead)` suffixes, excludes the player themselves, and hides occupants and items when dark.
+  * Added `pushRoomIn(room)` to broadcast room pane updates to all occupants on enter/leave.
+* **Movement & Broadcasts (`internal/commands/commands.go`, `internal/server/server.go`)**:
+  * Movement emits `leaves <dir>` to the old room and `arrives from <opposite>` to the destination room on `ChanNarrative`.
+  * `say` emits `You say, "..."` to the speaker and `<Actor> says, "..."` to others in the room on `ChanSay`.
+  * `emote` emits `<Actor> <text>` to all players in the room on `ChanNarrative`.
+  * Followers pull and enter rooms once, receiving narrative follow echoes and room entry.
+  * Combat swings, enemy hits, and Lua echoes (`h.Echo`, `h.EchoRoom`) route through room broadcasts without duplicate private echoes.
+  * `SpawnPlayer` supports spawning multiple players with unique IDs.
+* **Verification**:
+  * Added `internal/server/multiplayer_test.go` (`TestStage1Multiplayer`, `TestStage1QueueCoalescing`) covering two sessions in one world, leave/arrive opposing broadcasts, say/emote echoes, room isolation, dark room item hiding, fighting/linkdead occupant tags, and write queue coalescing.
+  * All tests pass: `go test -count=1 ./...` including `TestOldHousePlaythrough`.
+* **Review fixes (Oct 19, 2026)**:
+  * A full `Out` no longer drops narrative or reorders events under the TUI reader. The client flushes the side queue before each read.
+  * A stalled or quitting second session is removed and sent `DisconnectEvent`. The local session is the only quit that stops `Run`.
+  * Companion and stay mobiles skip wild AI when their owner or leader is any player, including a pet left behind or standing beside someone else.
+  * Wander and pursue still tell the old room and the destination when a player follows. A following player gets one `on_enter`.
+  * Death credit walks owner, leader, and party to a player. An empty `SlainBy` credits experience only when one character exists. Player death tells the fall room and the start room and refreshes both panes.
+  * Private combat lines (gear break, collapse, assist) are marked at the `Emit` call. A hit line that starts with "Your" still reaches the room.
+  * `go test ./...` passed on Oct 19, 2026.
+
 
 

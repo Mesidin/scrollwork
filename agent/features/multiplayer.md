@@ -1,239 +1,181 @@
-# Feature Specification: Networking & Multiplayer Architecture
+# Multiplayer development guide
 
-## 1. Overview & Architectural Goals
+Sudengine is a single-player engine today. The TUI talks to an in-process server through `internal/protocol`. Multiplayer binds that same server to a port. UI types stay out of the server.
 
-Sudengine was originally built as a single-player MUD engine where an in-process server communicates with a Bubble Tea terminal client over typed protocol events (`internal/protocol`). 
+This file is the build order. The roadmap checklist in section 7 matches these stages. Do not start a later stage until the earlier stage's done check passes.
 
-As stated in `AGENTS.md`:
-> *"Architecture: TUI talks to an in-process server via protocol. Future multiplayer binds that server to a port; do not leak UI types into the server."*
+`play <pack>` stays an in-process, offline game. `serve` is a later command. Headless tests keep calling `commands.Dispatch` on a context for one actor. `go test ./internal/server` must still walk `games/old-house` after every stage.
 
-The goal of this specification is to pre-plan the complete architecture for turning Sudengine into a multi-user dungeon (MUD), supporting:
-1. **Multiple concurrent players** roaming the same persistent world.
-2. **Dual execution modes**:
-   - `sudengine play <pack>`: In-process, single-player offline play (100% backwards compatible).
-   - `sudengine serve <pack> [--port 4000] [--telnet 4023]`: Headless dedicated server hosting the world.
-   - `sudengine connect <host:port>`: Networked Bubble Tea client connecting to a remote server.
-3. **Multi-client connectivity**:
-   - **Telnet / Raw TCP**: Standard MUD clients (Mudlet, TinTin++, terminal netcat) via ANSI text stream.
-   - **Structured Protocol Stream**: JSON-framed `protocol.Event` stream powering remote Bubble Tea TUI or future web clients.
-4. **Deterministic single-threaded game loop**:
-   - Network I/O is asynchronous on dedicated connection goroutines.
-   - Command dispatch and world mutation remain strictly single-threaded on the server tick loop, avoiding race conditions and locking overhead.
+## What the code does now
 
----
+`Server` keeps a session map. `play` puts one local session in it. `Run` selects the clock and that session's `In`. `Session.Out` is a buffered channel of 128 events. Events that do not fit wait in a side queue. Vitals, map, combat, and prompt coalesce only there. `Send` does not read `Out`. Room text and command results are not dropped. Two ticks with `Out` still full disconnect that session. `Run` returns when the local session leaves.
 
-## 2. Server Concurrency & Connection Model
+`commands.Context` is built for that one session. `Actor` comes from `sess.PlayerID`, but several server paths still call `World.Player()`: combat start, assists, Lua `echo` / `echo_room`, `moveEntity`, `pushRoom`, `reapDead`, and companion recall. Combat `Emit` and script echoes deliver text only when the target is that one player.
 
-```
-                    ┌───────────────────────────────┐
-                    │       Dedicated Server        │
-                    │                               │
- [Telnet Client]──► │ [Telnet Conn] ──┐             │
-                    │                 ▼             │
- [TUI Client]   ──► │ [Proto Conn]  ──┼──► [ In Chan (Session, Command) ]
-                    │                 ▲             │
- [Web/WSS Client]─► │ [WSS Conn]   ───┘             │
-                    │                               ▼
-                    │                  ┌─────────────────────────┐
-                    │                  │  Server Main Tick Loop  │
-                    │                  │  - Tick / Weather       │
-                    │                  │  - Process Commands     │
-                    │                  │  - Combat Rounds        │
-                    │                  │  - AI / Respawns        │
-                    │                  └────────────┬────────────┘
-                    │                               │
-                    │         Dispatch Events       │
-                    │                               ▼
-                    │              ┌─────────────────────────────────┐
-                    │              │  Session Out Chans (Event Bus)  │
-                    │              │  - Room broadcasts              │
-                    │              │  - Targeted private tells       │
-                    │              │  - Per-player UI vitals/map/inv │
-                    │              └─────────────────────────────────┘
-                    └───────────────────────────────┘
-```
+`pushRoom` already lists both `KindMobile` and `KindPlayer` occupants, and it already skips items in a dark room. A second occupant renderer is not needed.
 
-### A. The Actor-Loop Pattern
-Rather than synchronizing `world.World` across dozens of concurrent goroutines with coarse read/write locks, Sudengine adopts the classic MUD actor loop:
-* **Connection Goroutines**: Each network connection runs a lightweight read loop that parses lines/frames and enqueues a `SessionCommand{Session: sess, Input: line}` into `server.cmdChan`.
-* **Main Server Loop**: The server loop consumes `cmdChan` sequentially between clock heartbeats (`ticker.C`).
-* **Zero Locking Overhead**: Movement, item trades, combat swings, and Lua scripts execute sequentially in the main thread with guaranteed determinism and zero race conditions.
-* **Non-Blocking Write Queues**: Each session maintains a buffered `Out chan protocol.Event` (e.g. buffer size 256). If a client stalls or disconnects, the server drops or disconnects without freezing the world loop.
+Saves are full JSON snapshots, `saves/<pack>/<slot>.json`, written by `save.Write`. There is no migration. A new game is not an old save.
 
----
+`protocol.Event` is an interface. The concrete events (`TextEvent`, `RoomEvent`, `VitalsEvent`, and the rest in `internal/protocol/protocol.go`) have no JSON tags and no type field. A remote client cannot decode a bare `json.Marshal` of the interface.
 
-## 3. Session & Connection Lifecycle
+`world.Opposite` maps the canonical directions, including `n`/`north`. Party membership, follower pull, and pet kill credit already exist. Player death already follows `rpg.yaml`: drop or keep items (`Death.PlayerKeepItems`), restore a percent of the primary resource, recall to `StartRoom`, and recall owned companions.
 
-```
-[ New Connection ]
-        │
-        ▼
-[ State: Handshake / Login ]
-        ├─► Existing User ──► [ Password Check ] ──► [ Success ]
-        └─► New User      ──► [ Account / Char Creation (Chargen) ]
-                                                            │
-                                                            ▼
-                                                    [ State: InWorld ]
-                                                            │
-                                            ┌───────────────┴───────────────┐
-                                            ▼                               ▼
-                                    [ Clean 'quit' ]                [ Disconnect / Linkdead ]
-                                            │                               │
-                                            ▼                               ▼
-                                    [ Save & Despawn ]              [ 60s Grace Period in Room ]
-                                                                            │
-                                                                    (Timeout or Slain)
-                                                                            ▼
-                                                                    [ Auto-Save & Despawn ]
-```
+## Modes
 
-### A. Session States
-```go
-type SessionState int
+| Command | When | What it does |
+|---|---|---|
+| `sudengine play <pack>` | Now, and after every stage | In-process TUI. One local session. Chargen stays on the client, then `SpawnPlayer`. |
+| `sudengine serve <pack> [--port 4000]` | Stage 3 | Headless play-only server. No builder verbs. Listens on localhost until accounts exist. |
+| `sudengine connect <host:port>` | Stage 3 | Bubble Tea client over the framed protocol. |
+| Telnet on port 4023 | Stage 4 | ANSI rendering of the same events for Mudlet, TinTin++, and similar clients. |
 
-const (
-    StateLogin SessionState = iota
-    StateChargen
-    StatePlaying
-    StateLinkdead
-    StateClosed
-)
+`serve` does not load build mode. OLC stays on local `build`.
+
+## The actor loop
+
+Network reads run on the connection goroutine. They do not touch `world.World`, the RNG, or Lua. They enqueue a message. The tick loop is the only goroutine that mutates the world.
+
+Connect, disconnect, and input are messages on one server channel, the same channel `Run` selects. The session map is touched only on that loop. There is no second lock around the world.
+
+Each tick handles at most one queued command per session, then the heartbeat (weather, combat, AI, respawn). A fast client must not drain the queue ahead of the clock.
+
+The world is single-threaded. Arrival order from the network is not deterministic, and the guide does not claim that it is.
+
+`Session.Out` stays the write queue. Coalesce UI pushes (`VitalsEvent`, `MapEvent`, `CombatEvent`, `PromptEvent`) in the side queue: a newer push replaces one still waiting there. Do not read `Out` from the server. Room text and command results are not dropped. If `Out` stays full for two ticks, disconnect that session. Leave the world running unless the local session is the one that stalled or quit.
+
+## Stage 1 — Who hears an event
+
+Goal: two players in one process see the same room. No sockets.
+
+Add `sendTo(player, event)` and `sendRoom(room, except, event)`. The local session is the only entry in the session map. `play` and the Old House tests use that one entry.
+
+Build `commands.Context` from the session that owns the command (`ctx(sess)`), and pass that actor into combat start, assists, movement, death, and Lua callbacks. `World.Player()` stays for single-player tests and for code that has not moved yet. New server, combat, and script paths take the acting entity. Do not look up "the player" with `World.Player()` on a path that can run for someone else.
+
+`pushRoom`, `pushVitals`, `pushInv`, `pushMap`, and `pushCombat` take the player they describe. Each player in a room gets their own `RoomEvent` (they do not see themselves; darkness is already per room). Other players in the occupant list get a short suffix: ` (fighting)` or ` (linkdead)`. Items and scenery stay as they are.
+
+Movement uses `world.Opposite`. The mover gets the normal arrival. Others in the room they left get `leaves <dir>`. Others in the room they entered get `arrives from <opposite>`. Followers already move with `moveFollowers`. A following player gets the normal room entry, once.
+
+`say <text>` and `'<text>` go to `ChanSay` for every player in the room, including the speaker. `emote` / `:<text>` go to `ChanNarrative` the same way. Leave and arrive lines are the other Stage 1 broadcast.
+
+Lua `echo` goes to that actor. `echo_room` goes to every player in the room except `skip`. Combat text is one room message: the actor does not also get a private copy of the same line. Player swings stay `ChanNarrative`. Enemy hits stay `ChanCombat`. A hostile arriving stays `ChanAlert`.
+
+### Stage 1 done
+
+- `go test ./internal/server` passes, including the Old House playthrough.
+- A new test puts two sessions in one world. One moves, the other sees the leave and the arrive. One says, the other hears it. A dark room still hides items. An event for session A is not delivered to session B in another room.
+
+## Stage 2 — Queue and a few verbs
+
+Replace the single `case line := <-s.Session.In` with the server command channel. The local TUI and tests deliver input as a message carrying the session. `Dispatch` still accepts a context whose `Actor` is that session's player, so existing tests do not need a socket.
+
+Add `tell <player> <text>`, `who`, and `gossip <text>` (alias `ooc`). `tell` is private `ChanSay` to the target, plus an echo to the speaker. `gossip` is `ChanSystem` to every logged-in player. `who` lists connected characters with the pack's role name and primary resource. There is no engine level stat. Do not print a level column.
+
+`party <text>` (alias `gt`) talks to the current party, wherever they are. It uses `PartyLeader`. It does not invent a second group.
+
+`whisper`, `shout`, and room `pvp` wait until after Stage 4. `kill <player>` refuses with a calm line everywhere until a room flag exists. That refusal can land in Stage 2 so two test characters cannot cut each other down by accident.
+
+### Stage 2 done
+
+- One command per session per tick is covered by a test that queues two lines and sees the second wait.
+- `tell` does not leak to a third session. `who` lists both characters. `gossip` reaches both rooms.
+
+## Stage 3 — Framed protocol
+
+`sudengine serve <pack>` loads the pack, validates it, and listens on `127.0.0.1:4000` unless `--port` is set. It does not open a public address. `sudengine connect <host:port>` is the Bubble Tea client. Chargen for `connect` can send the same race and role the local launcher already collects. The server then calls `SpawnPlayer`. Full server-driven chargen is Stage 5.
+
+Each frame is a length prefix plus a JSON object:
+
+```json
+{"t":"text","channel":"say","text":"Ada says, \"Hello.\""}
 ```
 
-1. **Login State**:
-   - Prompts for account or character name.
-   - Enforces password authentication (hashed via Argon2 or bcrypt).
-2. **Chargen State**:
-   - Reuses existing `rpg.yaml` chargen rules: bundles, origins/races, roles/classes, and initial attribute point allocation.
-   - Instantiates a new player entity into `world.Entities`.
-3. **Playing State**:
-   - Bound to an active `world.Entity` where `e.Kind == world.KindPlayer`.
-   - Placed in `start_room` (or the room where the character previously saved).
-4. **Linkdead State (Grace Period)**:
-   - If a network socket drops during combat or traversal, the character does not vanish instantly (preventing combat combat-logging).
-   - Marked `Linkdead: true` for a 60-second window before despawning.
+`t` is one of `text`, `prompt`, `room`, `vitals`, `inventory`, `map`, `combat`, `layout`, `mode`, `title`, `disconnect`. Add `json` tags on the protocol structs when the encoder is written. The in-process channel can keep passing the Go values. The encoder lives next to the listener (`internal/net`), not inside the tick loop.
 
----
+Room descriptions contain newlines, so a newline-delimited stream is the wrong frame. One frame, one event.
 
-## 4. World & Room Multiplayer Semantics
+The remote client renders the panes it already renders locally. It does not grow a second protocol.
 
-### A. Entity Representation
-* `w.Entities` contains all players currently logged into the realm.
-* `w.Player()` remains as a fallback pointing to `w.Entities[w.PlayerID]` for single-player tests and scripts.
-* `w.Players()` returns all active player entities.
-* `w.SessionFor(playerID)` returns the network session bound to that character.
+### Stage 3 done
 
-### B. Room Visibility & Occupants
-* In single-player, `RoomEvent.Occupants` only listed `KindMobile`.
-* In multiplayer, `Occupants` includes other players in the room:
-  ```go
-  for _, id := range room.Contents {
-      e := w.Get(id)
-      if e == nil || e.ID == actor.ID {
-          continue
-      }
-      if e.Kind == world.KindPlayer {
-          status := ""
-          if e.InCombat() {
-              status = " (fighting)"
-          } else if e.HasFlag("linkdead") {
-              status = " (linkdead)"
-          }
-          ev.Occupants = append(ev.Occupants, fmt.Sprintf("%s%s", e.Display(), status))
-      } else if e.Kind == world.KindMobile {
-          ev.Occupants = append(ev.Occupants, e.Display())
-      }
-  }
-  ```
+- A test listener accepts one framed connection, sends a `room` event, and reads one command frame back onto the actor loop.
+- `connect` to localhost shows the same room `play` shows for that pack.
+- `serve` rejects build mode.
 
-### C. Movement Echoes
-When player $A$ moves through exit `north` from room $R_1$ to room $R_2$:
-* **Actor $A$**: Receives normal room description and arrival narrative.
-* **Occupants of $R_1$**: Receive narrative echo: `"[Actor] leaves north."` (or `"leaves hurriedly."` if fleeing).
-* **Occupants of $R_2$**: Receive narrative echo: `"[Actor] arrives from the south."`
-* **Followers**: Multi-tier follower propagation pulls companions and party members across the boundary with follower echoes.
+## Stage 4 — Telnet
 
----
+Telnet is a lossy view of the same events, on port 4023. It is not a second game loop.
 
-## 5. Communication Channels
+Read with a small IAC-aware scanner. `bufio.Scanner` splits on newlines and will break on Telnet negotiation bytes. During password entry (Stage 5), send `IAC WILL ECHO` so the client stops local echo, and do not write those bytes back. After login, restore client echo.
 
-| Command | Channel / Scope | Audience | Example Output |
-| :--- | :--- | :--- | :--- |
-| `say <text>` / `'<text>` | `ChanSay` (Local Room) | All players in the same room | `Ada says, "Greetings everyone."` |
-| `emote <text>` / `:<text>` | `ChanNarrative` (Local Room) | All players in the same room | `Ada waves her hand warmly.` |
-| `tell <player> <msg>` | `ChanSay` (Private) | Specific target player | `[To Bob] "Meet me at the square."` / `[From Ada] "Meet me at the square."` |
-| `whisper <player> <msg>`| `ChanSay` (Quiet Room) | Target player in same room | `Ada whispers to you, "Be careful."` |
-| `shout <text>` / `yell` | `ChanAlert` (Area/Outdoors) | All players in adjacent outdoor rooms | `Someone shouts from the east, "Watch out!"` |
-| `gossip <text>` / `ooc` | `ChanSystem` (Global Realm) | All logged-in players | `[Gossip] Ada: "Anyone know where Sergeant Bram is?"` |
-| `group <msg>` / `gt <msg>`| `ChanNarrative` (Party) | All party members anywhere | `[Party] Ada: "Fall back and heal!"` |
-| `who` | `ChanSystem` (Roster) | Invoker | Displays online player list, levels, roles, and idle status |
+Map events to ANSI-16 the way `internal/theme` already does:
 
----
+| Event | Telnet output |
+|---|---|
+| `room` | Title, description, exits, items, occupants |
+| `vitals` / `prompt` | A one-line prompt |
+| `text` | The line, colored by channel |
+| `map`, `combat`, `inventory` | Omitted, or a one-line summary when the player asks |
 
-## 6. Combat, Groups & PvP Rules
+### Stage 4 done
 
-### A. Cooperative PvE Combat
-* Multiple players can engage the same mobile simultaneously.
-* Combat rounds broadcast attack narratives and damage rolls to all players in the room.
-* Experience points and quest objective kill credit are shared across party members present in the room when the target falls.
+- A raw TCP test sends `look\n` and receives the room title.
+- An IAC sequence in the byte stream is consumed and is not dispatched as a command.
 
-### B. PvP Flagging & Arenas
-* **Default**: Peaceful PvE. Players cannot attack other players (`kill <player>` refuses with `"You cannot attack other players here."`).
-* **Arena / PvP Rooms**: Rooms flagged `flags: [pvp]` or `flags: [arena]` allow mutual combat between players.
-* **Opt-In Stance**: Optional player flag (`pvp on/off`) in packs that support open wilderness fighting.
+## Stage 5 — Accounts, saves, link-dead
 
----
+Login is an account, then a character. The character name is not the password identity. Hash passwords with bcrypt (`golang.org/x/crypto/bcrypt`). One account can own more than one character.
 
-## 7. Account & Character Persistence
+The live world stays one entity tree. Players are entities in rooms, and their inventory is children of those entities, as it is today. The on-disk cut is taken from that tree:
 
-### A. Directory Structure
 ```
 saves/<pack>/
-  accounts/
-    <account_id>.json         # Account credentials (username, password_hash, created_at)
-  players/
-    <player_name>.yaml        # Full character snapshot (attributes, resources, inventory, quests, recipes, location)
-  world_state.yaml            # Shared persistent world state (vault till, merchant purse, gathering node timers)
+  <slot>.json                         # unchanged single-player snapshot
+  accounts/<account_id>.json          # username, password hash, created time
+  players/<character>.json            # that player's entity subgraph
+  world.json                          # the shared tree with player entities removed
 ```
 
-### B. Isolated Player Saves
-* In single-player, saving writes the entire world into `saves/<pack>/<slot>.yaml`.
-* In multiplayer:
-  - Each character is stored in its own YAML file (`saves/<pack>/players/<player>.yaml`).
-  - Player saving does not overwrite or block other players.
-  - The shared world state (vendor purse, banks, persistent world items) is saved independently on an autosave interval (e.g. every 5 minutes) or server shutdown.
+Write `players/*.json` and `world.json` to temp files and rename them together. A crash between the two must not leave a coin in both places or in neither. `play` keeps using `save.Write` and the slot JSON. Do not read an old slot as an account, and do not rewrite old snapshots.
 
----
+Autosave on an interval and on shutdown uses that same paired write. Player death uses the existing `rpg.yaml` death rules for that player: items drop or stay, the body recalls to `StartRoom`, companions recall. Credit and XP for a mob go to party members who are in the room when it falls, and the existing pet and companion credit stays.
 
-## 8. Network Transports & Prototypes
+A dropped socket sets the character link-dead and leaves them in the room and in the fight. `quit` during combat starts that same grace period. The default grace is 60 seconds. When it ends, save and despawn. If they die during the grace, the death rules run first, then the save stores them at the start room.
 
-### A. Transport 1: Telnet / Raw TCP (Port 4023)
-* Standard line-oriented TCP server using `bufio.Scanner`.
-* Translates incoming ASCII/UTF-8 commands into `server.cmdChan`.
-* Formats outgoing `protocol.Event` structs into colored ANSI-16 text:
-  - `RoomEvent` -> Renders room title, description, exits, items, and occupants.
-  - `VitalsEvent` -> Renders prompt or prompt status string.
-  - `TextEvent` -> Prints directly with channel ANSI color coding.
-* Telnet negotiation: IAC WILL ECHO for password suppression during login.
+Server-driven chargen for Telnet reuses `rpg.yaml` bundles, origins, roles, and point buy. The local `play` launcher can keep doing chargen before it attaches.
 
-### B. Transport 2: Framed Protocol (TCP / WebSocket Port 4000)
-* Transmits length-prefixed JSON frames or WebSocket text frames representing exact `protocol.Event` JSON payloads.
-* Enables the native `sudengine connect <host:4000>` client to render the complete multi-pane Bubble Tea interface (dedicated map pane, real-time vitals meters, combat roster, and narrative output) across the network.
+### Stage 5 done
 
----
+- Two characters save and load without either file containing the other's inventory.
+- A failed second write leaves the previous pair in place.
+- An old `saves/<pack>/<slot>.json` still loads in `play`.
+- A link-dead character is still in the room on the next tick, and is gone after the grace period.
 
-## 9. Staged Implementation Plan
+## Combat and PvP, after Stage 4
 
-* **Stage 1: Multi-Session Engine Core**
-  - Refactor `internal/server/server.go` to maintain `map[string]*Session` and a thread-safe connection register.
-  - Route incoming session commands into `s.cmdChan`.
-  - Implement room broadcasting for `say`, `emote`, and room arrival/departure.
-  - Implement `who`, `tell`, and `gossip` verbs.
-* **Stage 2: Network Gateways (`internal/net`)**
-  - Implement TCP Telnet gateway (`internal/net/telnet.go`).
-  - Implement protocol streaming gateway (`internal/net/stream.go`).
-  - Add CLI subcommands: `sudengine serve <pack>` and `sudengine connect <host:port>`.
-* **Stage 3: Accounts & Character Persistence**
-  - Login state machine and password hashing.
-  - Individual character snapshot storage in `saves/<pack>/players/`.
-  - Link-dead detection, auto-reconnect, and graceful disconnects.
+Several players can fight one mobile. The room sees each swing once. Quest kill credit and XP go to party members in the room when the mobile dies. Someone in another room gets neither. Pet and companion credit is unchanged.
+
+Default play refuses `kill <player>`. A later pack flag `pvp` on a room allows it. An open-wilderness stance waits until a pack asks for it. One switch is enough until then.
+
+## Chat, by stage
+
+| Command | Stage | Who hears it |
+|---|---|---|
+| `say`, `'`, `emote`, `:` | 1 | Players in the room |
+| Leave / arrive | 1 | Players in the rooms on either side of the move |
+| `tell` | 2 | Speaker and target |
+| `who` | 2 | The asker |
+| `gossip`, `ooc` | 2 | Every connected player |
+| `party`, `gt` | 2 | Current party members |
+| `whisper` | later | One player in the same room |
+| `shout`, `yell` | later | Players in adjacent rooms that are outdoor |
+
+`shout` uses the outdoor flag the weather system already understands. Adjacent means one exit step.
+
+## Not in these stages
+
+- WebSocket or a browser client. Add it after the framed protocol is stable.
+- A public bind before accounts.
+- Builder verbs on `serve`.
+- Rewriting single-player saves into the account layout.
+- A second party system beside `PartyLeader`.
+- Baked-in levels, classes, or PvP balance. Packs keep supplying those names and numbers.

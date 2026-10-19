@@ -11,7 +11,7 @@ import (
 	"sudengine/internal/world"
 )
 
-type Emitter func(to *world.Entity, channel, text string)
+type Emitter func(to *world.Entity, channel, text string, private bool)
 
 type Engine struct {
 	RNG     *rand.Rand
@@ -75,7 +75,7 @@ func (e *Engine) CheckAssists(w *world.World, leader, target *world.Entity, now 
 				kid.Combat.NextSwing = now + 1
 			}
 			if e.Emit != nil {
-				e.Emit(leader, "combat", fmt.Sprintf("%s rushes to your aid against %s!", kid.Display(), target.Display()))
+				e.Emit(leader, "combat", fmt.Sprintf("%s rushes to your aid against %s!", kid.Display(), target.Display()), true)
 			}
 		}
 	}
@@ -185,7 +185,7 @@ func (e *Engine) swing(w *world.World, att, def *world.Entity) {
 		if id, ok := att.Equipment["wield"]; ok {
 			if wep := w.Get(id); wep != nil && wep.MaxDurability > 0 {
 				if economy.Degrade(wep, 1) && e.Emit != nil && att.Kind == world.KindPlayer {
-					e.Emit(att, "alert", fmt.Sprintf("Your %s breaks!", gearName(wep)))
+					e.Emit(att, "alert", fmt.Sprintf("Your %s breaks!", gearName(wep)), true)
 				}
 			}
 		}
@@ -197,7 +197,7 @@ func (e *Engine) swing(w *world.World, att, def *world.Entity) {
 			}
 			if arm := w.Get(id); arm != nil && arm.Armor != nil && arm.MaxDurability > 0 {
 				if economy.Degrade(arm, 1) && e.Emit != nil && def.Kind == world.KindPlayer {
-					e.Emit(def, "alert", fmt.Sprintf("Your %s breaks!", gearName(arm)))
+					e.Emit(def, "alert", fmt.Sprintf("Your %s breaks!", gearName(arm)), true)
 				}
 			}
 		}
@@ -212,9 +212,9 @@ func (e *Engine) swing(w *world.World, att, def *world.Entity) {
 		e.Stop(def)
 		if e.Emit != nil {
 			if def.Kind == world.KindPlayer {
-				e.Emit(def, "alert", "You collapse.")
+				e.Emit(def, "alert", "You collapse.", true)
 			} else if att.Kind == world.KindPlayer {
-				e.Emit(att, "narrative", fmt.Sprintf("%s dies.", def.CapDisplay()))
+				e.Emit(att, "narrative", fmt.Sprintf("%s dies.", def.CapDisplay()), false)
 			}
 		}
 	}
@@ -230,7 +230,7 @@ func (e *Engine) Damage(w *world.World, att, def *world.Entity, amount int, verb
 	}
 	def.AdjustRes(primary, -amount)
 	if e.Emit != nil && att != nil && att.Kind == world.KindPlayer {
-		e.Emit(att, "narrative", fmt.Sprintf("You %s %s for %d.", verb, def.Display(), amount))
+		e.Emit(att, "narrative", fmt.Sprintf("You %s %s for %d.", verb, def.Display(), amount), false)
 	}
 	if !def.Alive(primary) {
 		if att != nil {
@@ -278,17 +278,15 @@ func (e *Engine) report(w *world.World, att, def *world.Entity, atk world.Attack
 	}
 	switch {
 	case att.Kind == world.KindPlayer:
-		e.Emit(att, "narrative", line)
+		e.Emit(att, "narrative", line, false)
 	case def.Kind == world.KindPlayer:
 		ch := "combat"
 		if miss {
 			ch = "narrative"
 		}
-		e.Emit(def, ch, line)
+		e.Emit(def, ch, line, false)
 	default:
-		if p := w.Player(); p != nil && w.RoomOf(p) == w.RoomOf(att) {
-			e.Emit(p, "narrative", line)
-		}
+		e.Emit(att, "narrative", line, false)
 	}
 }
 
