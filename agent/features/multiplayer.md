@@ -10,7 +10,7 @@ This file is the build order. The roadmap checklist in section 7 matches these s
 
 `Server` keeps a session map. `play` puts one local session in it. `Run` selects the clock and that session's `In`. `Session.Out` is a buffered channel of 128 events. Events that do not fit wait in a side queue. Vitals, map, combat, and prompt coalesce only there. `Send` does not read `Out`. Room text and command results are not dropped. Two ticks with `Out` still full disconnect that session. `Run` returns when the local session leaves.
 
-`commands.Context` is built for that one session. `Actor` comes from `sess.PlayerID`, but several server paths still call `World.Player()`: combat start, assists, Lua `echo` / `echo_room`, `moveEntity`, `pushRoom`, `reapDead`, and companion recall. Combat `Emit` and script echoes deliver text only when the target is that one player.
+`commands.Context` is built from the session that owns the command. Combat, movement, death, and Lua take that actor. `World.Player()` remains for single-player tests. Room text goes through `sendTo` and `sendRoom`.
 
 `pushRoom` already lists both `KindMobile` and `KindPlayer` occupants, and it already skips items in a dark room. A second occupant renderer is not needed.
 
@@ -57,12 +57,13 @@ Movement uses `world.Opposite`. The mover gets the normal arrival. Others in the
 
 `say <text>` and `'<text>` go to `ChanSay` for every player in the room, including the speaker. `emote` / `:<text>` go to `ChanNarrative` the same way. Leave and arrive lines are the other Stage 1 broadcast.
 
-Lua `echo` goes to that actor. `echo_room` goes to every player in the room except `skip`. Combat text is one room message: the actor does not also get a private copy of the same line. Player swings stay `ChanNarrative`. Enemy hits stay `ChanCombat`. A hostile arriving stays `ChanAlert`.
+Lua `echo` goes to that actor. `echo_room` goes to every player in the room except `skip`. A swing gives the fighter the second-person line in private. Everyone else sees `hit_room` or `miss_room`, or a plain third-person sentence when those are left out. The fighter does not also see that room line. When both sides are players, each sees their own second-person line, and the room line skips both of them. Gear breaks, collapse, and an assist call stay private to that person. Do not classify a line by its wording. Player swings stay `ChanNarrative`. An enemy hit on the defender stays `ChanCombat`, and the room line for that swing uses the same channel. A miss is `ChanNarrative`. `{Name} dies.` is one room line, including the killer. A hostile arriving stays `ChanAlert`.
 
 ### Stage 1 done
 
 - `go test ./internal/server` passes, including the Old House playthrough.
 - A new test puts two sessions in one world. One moves, the other sees the leave and the arrive. One says, the other hears it. A dark room still hides items. An event for session A is not delivered to session B in another room.
+- A second person in a fight sees the third-person swing, not the fighter's "You" line. The fighter does not also see the room line.
 
 ## Stage 2 — Queue and a few verbs
 

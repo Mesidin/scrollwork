@@ -51,6 +51,8 @@
         skill: melee
         hit: "The {Name} tore into you with a ravenous bite."
         miss: "The {Name} snapped and missed."
+        hit_room: "The {Name} tore into {name} with a ravenous bite."
+        miss_room: "The {Name} snapped at {name} and missed."
   resources:
     vigor:
       current: 10
@@ -87,6 +89,8 @@
         damage: 1d4
         hit: "The {Name} catches your arm."
         miss: "The {Name} lunges short."
+        hit_room: "The {Name} catches {name}'s arm."
+        miss_room: "The {Name} lunges short of {name}."
   resources:
     vigor:
       current: 8
@@ -122,6 +126,8 @@
         skill: melee
         hit: "The {Name} chops into you."
         miss: "The {Name} chops the air."
+        hit_room: "The {Name} chops into {name}."
+        miss_room: "The {Name} chops the air near {name}."
   resources:
     vigor:
       current: 18

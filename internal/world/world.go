@@ -37,11 +37,13 @@ type Exit struct {
 }
 
 type Attack struct {
-	Name   string `json:"name" yaml:"name"`
-	Damage string `json:"damage" yaml:"damage"`
-	Skill  string `json:"skill,omitempty" yaml:"skill,omitempty"`
-	Hit    string `json:"hit,omitempty" yaml:"hit,omitempty"`
-	Miss   string `json:"miss,omitempty" yaml:"miss,omitempty"`
+	Name     string `json:"name" yaml:"name"`
+	Damage   string `json:"damage" yaml:"damage"`
+	Skill    string `json:"skill,omitempty" yaml:"skill,omitempty"`
+	Hit      string `json:"hit,omitempty" yaml:"hit,omitempty"`
+	Miss     string `json:"miss,omitempty" yaml:"miss,omitempty"`
+	HitRoom  string `json:"hit_room,omitempty" yaml:"hit_room,omitempty"`
+	MissRoom string `json:"miss_room,omitempty" yaml:"miss_room,omitempty"`
 }
 
 type AI struct {
@@ -88,11 +90,13 @@ type GatherNode struct {
 }
 
 type Weapon struct {
-	Damage string `json:"damage,omitempty" yaml:"damage,omitempty"`
-	Verb   string `json:"verb,omitempty" yaml:"verb,omitempty"`
-	Skill  string `json:"skill,omitempty" yaml:"skill,omitempty"`
-	Hit    string `json:"hit,omitempty" yaml:"hit,omitempty"`
-	Miss   string `json:"miss,omitempty" yaml:"miss,omitempty"`
+	Damage   string `json:"damage,omitempty" yaml:"damage,omitempty"`
+	Verb     string `json:"verb,omitempty" yaml:"verb,omitempty"`
+	Skill    string `json:"skill,omitempty" yaml:"skill,omitempty"`
+	Hit      string `json:"hit,omitempty" yaml:"hit,omitempty"`
+	Miss     string `json:"miss,omitempty" yaml:"miss,omitempty"`
+	HitRoom  string `json:"hit_room,omitempty" yaml:"hit_room,omitempty"`
+	MissRoom string `json:"miss_room,omitempty" yaml:"miss_room,omitempty"`
 }
 
 type Armor struct {
@@ -100,15 +104,15 @@ type Armor struct {
 }
 
 type Shop struct {
-	Currency string `json:"currency,omitempty" yaml:"currency,omitempty"`
-	Markup   int    `json:"markup,omitempty" yaml:"markup,omitempty"`
-	Purse    int    `json:"purse,omitempty" yaml:"purse,omitempty"`
-	MaxPurse int    `json:"max_purse,omitempty" yaml:"max_purse,omitempty"`
-	Dynamic    bool     `json:"dynamic,omitempty" yaml:"dynamic,omitempty"`
-	PriceCurve bool     `json:"price_curve,omitempty" yaml:"price_curve,omitempty"`
+	Currency   string `json:"currency,omitempty" yaml:"currency,omitempty"`
+	Markup     int    `json:"markup,omitempty" yaml:"markup,omitempty"`
+	Purse      int    `json:"purse,omitempty" yaml:"purse,omitempty"`
+	MaxPurse   int    `json:"max_purse,omitempty" yaml:"max_purse,omitempty"`
+	Dynamic    bool   `json:"dynamic,omitempty" yaml:"dynamic,omitempty"`
+	PriceCurve bool   `json:"price_curve,omitempty" yaml:"price_curve,omitempty"`
 	// Finite stays set when the balance hits zero. A missing purse is an unlimited buyer.
-	Finite     bool     `json:"finite,omitempty" yaml:"finite,omitempty"`
-	Stock      []string `json:"stock,omitempty" yaml:"stock,omitempty"`
+	Finite bool     `json:"finite,omitempty" yaml:"finite,omitempty"`
+	Stock  []string `json:"stock,omitempty" yaml:"stock,omitempty"`
 }
 
 // UnmarshalYAML marks a till finite when the pack sets purse or max_purse, including 0.
@@ -225,17 +229,17 @@ type Entity struct {
 	Repairer    bool `json:"repairer,omitempty" yaml:"repairer,omitempty"`
 	Banker      bool `json:"banker,omitempty" yaml:"banker,omitempty"`
 
-	Bank         map[string]int         `json:"bank,omitempty" yaml:"bank,omitempty"`
+	Bank          map[string]int         `json:"bank,omitempty" yaml:"bank,omitempty"`
 	Recipes       []string               `json:"recipes,omitempty" yaml:"recipes,omitempty"`
 	RecipeMethods map[string]string      `json:"recipe_methods,omitempty" yaml:"recipe_methods,omitempty"`
 	TeachRecipes  map[string]string      `json:"teach_recipes,omitempty" yaml:"teach_recipes,omitempty"`
-	Gather       *GatherNode            `json:"gather,omitempty" yaml:"gather,omitempty"`
-	Quests       map[string]*QuestState `json:"quests,omitempty" yaml:"quests,omitempty"`
-	Loot         []LootDrop             `json:"loot,omitempty" yaml:"loot,omitempty"`
-	Salvage      []SalvageYield         `json:"salvage,omitempty" yaml:"salvage,omitempty"`
-	RepairKit    *RepairKit             `json:"repair_kit,omitempty" yaml:"repair_kit,omitempty"`
-	RespawnEvery int                    `json:"respawn_every,omitempty" yaml:"respawn_every,omitempty"`
-	HomeRoom     ID                     `json:"home_room,omitempty" yaml:"home_room,omitempty"`
+	Gather        *GatherNode            `json:"gather,omitempty" yaml:"gather,omitempty"`
+	Quests        map[string]*QuestState `json:"quests,omitempty" yaml:"quests,omitempty"`
+	Loot          []LootDrop             `json:"loot,omitempty" yaml:"loot,omitempty"`
+	Salvage       []SalvageYield         `json:"salvage,omitempty" yaml:"salvage,omitempty"`
+	RepairKit     *RepairKit             `json:"repair_kit,omitempty" yaml:"repair_kit,omitempty"`
+	RespawnEvery  int                    `json:"respawn_every,omitempty" yaml:"respawn_every,omitempty"`
+	HomeRoom      ID                     `json:"home_room,omitempty" yaml:"home_room,omitempty"`
 	// SlainBy is the entity that landed the killing blow. Empty means the death had no attacker.
 	SlainBy ID `json:"slain_by,omitempty" yaml:"slain_by,omitempty"`
 

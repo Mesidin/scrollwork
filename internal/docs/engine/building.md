@@ -116,7 +116,7 @@ ai:
 
 Combat block is optional. `ask maid about key` uses `topics`.
 
-An attack may set `hit` and `miss` lines. `{Name}` is the attacker, `{name}` the target, `{damage}` the amount, `{resource}` the bar's label. `skill: melee` adds damage when that skill has `damage_every`. `oppose.escape` and `oppose.hit` are the difficulties this mobile imposes. `xp` is awarded if the pack turned advancement on. `trainer: true` marks someone who sells skill ranks.
+An attack may set `hit` and `miss` lines. `{Name}` is the attacker, `{name}` the target, `{damage}` the amount, `{resource}` the bar's label. `hit_room` and `miss_room` are that same swing for everyone else in the room. The fighter still sees `hit` and `miss`. Leave the room lines out and bystanders get a plain third-person sentence. A weapon uses the same four fields. `skill: melee` adds damage when that skill has `damage_every`. `oppose.escape` and `oppose.hit` are the difficulties this mobile imposes. `xp` is awarded if the pack turned advancement on. `trainer: true` marks someone who sells skill ranks.
 
 ## Checks, noticing, advancement
 

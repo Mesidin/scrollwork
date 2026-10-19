@@ -407,7 +407,11 @@ func TestCombatPrivacyIsNotProse(t *testing.T) {
 	blade := &world.Entity{
 		ID: "blade", Kind: world.KindItem, Name: "blade", Short: "a blade",
 		MaxDurability: 1, Durability: 1,
-		Weapon: &world.Weapon{Verb: "hit", Damage: "1d4", Hit: "Your blade bites {name}."},
+		Weapon: &world.Weapon{
+			Verb: "hit", Damage: "1d4",
+			Hit:     "Your blade bites {name}.",
+			HitRoom: "{Name}'s blade finds {name}.",
+		},
 	}
 	srv.World.Add(blade)
 	_ = srv.World.Move(blade.ID, ada.ID)
@@ -422,8 +426,11 @@ func TestCombatPrivacyIsNotProse(t *testing.T) {
 
 	adaText := texts(takeEvents(adaSess))
 	bobText := texts(takeEvents(bobSess))
-	if !strings.Contains(adaText, "Your blade bites") || !strings.Contains(bobText, "Your blade bites") {
-		t.Fatalf("swing line should reach the room:\nada:\n%s\nbob:\n%s", adaText, bobText)
+	if !strings.Contains(adaText, "Your blade bites") || strings.Contains(adaText, "blade finds") {
+		t.Fatalf("Ada should see only her swing:\n%s", adaText)
+	}
+	if !strings.Contains(bobText, "blade finds") || strings.Contains(bobText, "Your blade bites") || strings.Contains(bobText, "You ") {
+		t.Fatalf("Bob should see the room line only:\n%s", bobText)
 	}
 	if !strings.Contains(adaText, "Your blade breaks!") {
 		t.Fatalf("Ada missed the break:\n%s", adaText)
@@ -445,8 +452,11 @@ func TestCombatPrivacyIsNotProse(t *testing.T) {
 	if !strings.Contains(adaText, "You collapse.") {
 		t.Fatalf("Ada missed collapse:\n%s", adaText)
 	}
-	if strings.Contains(bobText, "You collapse.") {
-		t.Fatalf("collapse was broadcast:\n%s", bobText)
+	if strings.Contains(bobText, "You collapse.") || strings.Contains(bobText, "into you") {
+		t.Fatalf("Bob heard Ada's hit:\n%s", bobText)
+	}
+	if !strings.Contains(adaText, "into you") || !strings.Contains(bobText, "tore into Ada") {
+		t.Fatalf("wolf swing was not split:\nada:\n%s\nbob:\n%s", adaText, bobText)
 	}
 }
 

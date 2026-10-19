@@ -11,7 +11,18 @@ import (
 	"sudengine/internal/world"
 )
 
-type Emitter func(to *world.Entity, channel, text string, private bool)
+// Hear chooses who receives one combat line.
+// HearPrivate is only `to`. HearRoom is every player in `to`'s room.
+// HearOthers is that room except `to` and alsoExcept.
+type Hear int
+
+const (
+	HearPrivate Hear = iota
+	HearRoom
+	HearOthers
+)
+
+type Emitter func(to *world.Entity, channel, text string, hear Hear, alsoExcept ...*world.Entity)
 
 type Engine struct {
 	RNG     *rand.Rand
@@ -75,7 +86,7 @@ func (e *Engine) CheckAssists(w *world.World, leader, target *world.Entity, now 
 				kid.Combat.NextSwing = now + 1
 			}
 			if e.Emit != nil {
-				e.Emit(leader, "combat", fmt.Sprintf("%s rushes to your aid against %s!", kid.Display(), target.Display()), true)
+				e.Emit(leader, "combat", fmt.Sprintf("%s rushes to your aid against %s!", kid.Display(), target.Display()), HearPrivate)
 			}
 		}
 	}
@@ -185,7 +196,7 @@ func (e *Engine) swing(w *world.World, att, def *world.Entity) {
 		if id, ok := att.Equipment["wield"]; ok {
 			if wep := w.Get(id); wep != nil && wep.MaxDurability > 0 {
 				if economy.Degrade(wep, 1) && e.Emit != nil && att.Kind == world.KindPlayer {
-					e.Emit(att, "alert", fmt.Sprintf("Your %s breaks!", gearName(wep)), true)
+					e.Emit(att, "alert", fmt.Sprintf("Your %s breaks!", gearName(wep)), HearPrivate)
 				}
 			}
 		}
@@ -197,7 +208,7 @@ func (e *Engine) swing(w *world.World, att, def *world.Entity) {
 			}
 			if arm := w.Get(id); arm != nil && arm.Armor != nil && arm.MaxDurability > 0 {
 				if economy.Degrade(arm, 1) && e.Emit != nil && def.Kind == world.KindPlayer {
-					e.Emit(def, "alert", fmt.Sprintf("Your %s breaks!", gearName(arm)), true)
+					e.Emit(def, "alert", fmt.Sprintf("Your %s breaks!", gearName(arm)), HearPrivate)
 				}
 			}
 		}
@@ -212,9 +223,9 @@ func (e *Engine) swing(w *world.World, att, def *world.Entity) {
 		e.Stop(def)
 		if e.Emit != nil {
 			if def.Kind == world.KindPlayer {
-				e.Emit(def, "alert", "You collapse.", true)
+				e.Emit(def, "alert", "You collapse.", HearPrivate)
 			} else if att.Kind == world.KindPlayer {
-				e.Emit(att, "narrative", fmt.Sprintf("%s dies.", def.CapDisplay()), false)
+				e.Emit(att, "narrative", fmt.Sprintf("%s dies.", def.CapDisplay()), HearRoom)
 			}
 		}
 	}
@@ -230,7 +241,14 @@ func (e *Engine) Damage(w *world.World, att, def *world.Entity, amount int, verb
 	}
 	def.AdjustRes(primary, -amount)
 	if e.Emit != nil && att != nil && att.Kind == world.KindPlayer {
-		e.Emit(att, "narrative", fmt.Sprintf("You %s %s for %d.", verb, def.Display(), amount), false)
+		e.Emit(att, "narrative", fmt.Sprintf("You %s %s for %d.", verb, def.Display(), amount), HearPrivate)
+		roomLine := fmt.Sprintf("%s %s %s for %d.", att.CapDisplay(), ThirdPerson(verb), def.Display(), amount)
+		if def.Kind == world.KindPlayer {
+			e.Emit(def, "combat", fmt.Sprintf("%s %s you for %d.", att.CapDisplay(), ThirdPerson(verb), amount), HearPrivate)
+			e.Emit(att, "narrative", roomLine, HearOthers, def)
+		} else {
+			e.Emit(att, "narrative", roomLine, HearOthers)
+		}
 	}
 	if !def.Alive(primary) {
 		if att != nil {
@@ -241,53 +259,108 @@ func (e *Engine) Damage(w *world.World, att, def *world.Entity, amount int, verb
 	}
 }
 
+// report gives the fighter the second-person line and everyone else a third-person line.
+// The fighter does not also hear the room line. Mob versus mob is one room line.
 func (e *Engine) report(w *world.World, att, def *world.Entity, atk world.Attack, dmg int, hit *rpg.Result, miss bool) {
-	if e.Emit == nil {
+	if e.Emit == nil || att == nil || def == nil {
 		return
 	}
 	label := e.Primary
 	if e.Rules != nil {
 		label = e.Rules.Label(e.Primary, nil)
 	}
-	verb := atk.Name
-	var line string
-	token := false
+	playerAtt := att.Kind == world.KindPlayer
+	playerDef := def.Kind == world.KindPlayer
+	you, youToken, youTmpl := swingYou(att, def, atk, dmg, label, miss)
+	room, roomToken, roomTmpl := swingRoom(att, def, atk, dmg, label, miss)
+	if playerAtt || playerDef {
+		if youTmpl && e.Rules != nil {
+			you = e.Rules.Decorate(you, dmg, youToken, label, hit)
+		}
+		if roomTmpl && e.Rules != nil {
+			room = e.Rules.Decorate(room, dmg, roomToken, label, hit)
+		}
+	}
+	switch {
+	case playerAtt && playerDef:
+		e.Emit(att, "narrative", you, HearPrivate)
+		ch := "combat"
+		if miss {
+			ch = "narrative"
+		}
+		e.Emit(def, ch, plainTarget(att, def, atk, dmg, miss), HearPrivate)
+		e.Emit(att, "narrative", room, HearOthers, def)
+	case playerAtt:
+		e.Emit(att, "narrative", you, HearPrivate)
+		e.Emit(att, "narrative", room, HearOthers)
+	case playerDef:
+		ch := "combat"
+		if miss {
+			ch = "narrative"
+		}
+		e.Emit(def, ch, you, HearPrivate)
+		e.Emit(def, ch, room, HearOthers)
+	default:
+		e.Emit(att, "narrative", room, HearRoom)
+	}
+}
+
+func swingYou(att, def *world.Entity, atk world.Attack, dmg int, label string, miss bool) (string, bool, bool) {
 	tmpl := atk.Hit
 	if miss {
 		tmpl = atk.Miss
 	}
 	if tmpl != "" {
-		line, token = rpg.Fill(tmpl, def.Display(), att.CapDisplay(), label, dmg)
-	} else if miss {
+		line, token := rpg.Fill(tmpl, def.Display(), att.CapDisplay(), label, dmg)
+		return line, token, true
+	}
+	verb := atk.Name
+	if verb == "" {
+		verb = "hit"
+	}
+	if miss {
 		if att.Kind == world.KindPlayer {
-			line = fmt.Sprintf("You miss %s.", def.Display())
-		} else {
-			line = fmt.Sprintf("%s misses you.", att.CapDisplay())
+			return fmt.Sprintf("You miss %s.", def.Display()), false, false
 		}
-	} else {
-		if att.Kind == world.KindPlayer {
-			line = fmt.Sprintf("You %s %s for %d.", verb, def.Display(), dmg)
-		} else if def.Kind == world.KindPlayer {
-			line = fmt.Sprintf("%s %s you for %d.", att.CapDisplay(), ThirdPerson(verb), dmg)
-		} else {
-			line = fmt.Sprintf("%s %s %s.", att.CapDisplay(), ThirdPerson(verb), def.Display())
-		}
+		return fmt.Sprintf("%s misses you.", att.CapDisplay()), false, false
 	}
-	if tmpl != "" && e.Rules != nil && (att.Kind == world.KindPlayer || def.Kind == world.KindPlayer) {
-		line = e.Rules.Decorate(line, dmg, token, label, hit)
+	if att.Kind == world.KindPlayer {
+		return fmt.Sprintf("You %s %s for %d.", verb, def.Display(), dmg), false, false
 	}
-	switch {
-	case att.Kind == world.KindPlayer:
-		e.Emit(att, "narrative", line, false)
-	case def.Kind == world.KindPlayer:
-		ch := "combat"
-		if miss {
-			ch = "narrative"
-		}
-		e.Emit(def, ch, line, false)
-	default:
-		e.Emit(att, "narrative", line, false)
+	if def.Kind == world.KindPlayer {
+		return fmt.Sprintf("%s %s you for %d.", att.CapDisplay(), ThirdPerson(verb), dmg), false, false
 	}
+	return fmt.Sprintf("%s %s %s.", att.CapDisplay(), ThirdPerson(verb), def.Display()), false, false
+}
+
+func swingRoom(att, def *world.Entity, atk world.Attack, dmg int, label string, miss bool) (string, bool, bool) {
+	tmpl := atk.HitRoom
+	if miss {
+		tmpl = atk.MissRoom
+	}
+	if tmpl != "" {
+		line, token := rpg.Fill(tmpl, def.Display(), att.CapDisplay(), label, dmg)
+		return line, token, true
+	}
+	verb := atk.Name
+	if verb == "" {
+		verb = "hit"
+	}
+	if miss {
+		return fmt.Sprintf("%s misses %s.", att.CapDisplay(), def.Display()), false, false
+	}
+	return fmt.Sprintf("%s %s %s for %d.", att.CapDisplay(), ThirdPerson(verb), def.Display(), dmg), false, false
+}
+
+func plainTarget(att, def *world.Entity, atk world.Attack, dmg int, miss bool) string {
+	if miss {
+		return fmt.Sprintf("%s misses you.", att.CapDisplay())
+	}
+	verb := atk.Name
+	if verb == "" {
+		verb = "hit"
+	}
+	return fmt.Sprintf("%s %s you for %d.", att.CapDisplay(), ThirdPerson(verb), dmg)
 }
 
 func attackOf(w *world.World, att *world.Entity, e *Engine) world.Attack {
@@ -304,6 +377,7 @@ func attackOf(w *world.World, att *world.Entity, e *Engine) world.Attack {
 				return world.Attack{
 					Name: verb, Damage: it.Weapon.Damage, Skill: it.Weapon.Skill,
 					Hit: it.Weapon.Hit, Miss: it.Weapon.Miss,
+					HitRoom: it.Weapon.HitRoom, MissRoom: it.Weapon.MissRoom,
 				}
 			}
 		}

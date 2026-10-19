@@ -8,7 +8,7 @@ This document records the chronological development history, verified features, 
 
 * **Engine**: Go 1.22+ Bubble Tea MUD engine with runtime YAML+Lua pack loading.
 * **Test Suite**: `go test ./...` passing across all packages.
-* **Working Tree**: Stage 1 multiplayer is in the tree, including the Oct 19 review fixes for the output queue, session quit, companion AI, room broadcasts, one room entry, and death credit. The multiplayer guide rewrite is in the same tree.
+* **Working Tree**: Clean. A swing's second-person line is private to the fighter. Everyone else hears a third-person line.
 * **Sample Packs**:
   * `games/old-house`: Core story regression pack.
   * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, economy, quests, and companion interactions.
@@ -352,8 +352,12 @@ This document records the chronological development history, verified features, 
   * Companion and stay mobiles skip wild AI when their owner or leader is any player, including a pet left behind or standing beside someone else.
   * Wander and pursue still tell the old room and the destination when a player follows. A following player gets one `on_enter`.
   * Death credit walks owner, leader, and party to a player. An empty `SlainBy` credits experience only when one character exists. Player death tells the fall room and the start room and refreshes both panes.
-  * Private combat lines (gear break, collapse, assist) are marked at the `Emit` call. A hit line that starts with "Your" still reaches the room.
+  * Private combat lines (gear break, collapse, assist) are marked at the `Emit` call. At this commit a hit line was still one room message. The swing split below gives that line to the fighter only.
   * `go test ./...` passed on Oct 19, 2026.
+* **Swing lines (Oct 19, 2026)**:
+  * Each swing gives the fighter the existing second-person line in private. Everyone else gets `hit_room` / `miss_room`, or a plain third-person sentence when those are omitted. The fighter does not also hear the room line. Two players in the same swing each get a second-person line, and the room line skips both.
+  * Gear breaks, collapse, and assist calls stay private. `{Name} dies.` stays one room line. `Emit` takes an audience (`HearPrivate`, `HearRoom`, `HearOthers`) instead of a bool. Do not classify lines by their wording.
+  * Sample attacks in Old House and Green Hollow set the room lines. `go test ./...` passed on Oct 19, 2026.
 
 
 

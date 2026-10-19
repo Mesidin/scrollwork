@@ -352,20 +352,34 @@ func Launch(opt Options) (*Server, *Session, error) {
 		Primary: p.RPG.Primary(),
 		Every:   p.Meta.CombatEvery,
 		Rules:   &p.RPG,
-		Emit: func(to *world.Entity, channel, text string, private bool) {
+		Emit: func(to *world.Entity, channel, text string, hear combat.Hear, alsoExcept ...*world.Entity) {
 			if to == nil {
 				return
 			}
 			ev := protocol.TextEvent{Channel: protocol.Channel(channel), Text: text}
-			if private {
+			switch hear {
+			case combat.HearPrivate:
 				srv.sendTo(to, ev)
-				return
+			case combat.HearOthers:
+				room := w.RoomOf(to)
+				if room == nil {
+					return
+				}
+				skip := make([]world.ID, 0, 1+len(alsoExcept))
+				skip = append(skip, to.ID)
+				for _, ex := range alsoExcept {
+					if ex != nil {
+						skip = append(skip, ex.ID)
+					}
+				}
+				srv.sendRoomSkip(room, skip, ev)
+			default:
+				if room := w.RoomOf(to); room != nil {
+					srv.sendRoom(room, nil, ev)
+					return
+				}
+				srv.sendTo(to, ev)
 			}
-			if room := w.RoomOf(to); room != nil {
-				srv.sendRoom(room, nil, ev)
-				return
-			}
-			srv.sendTo(to, ev)
 		},
 	}
 	srv.Combat.HitMod = srv.outdoorHitPenalty

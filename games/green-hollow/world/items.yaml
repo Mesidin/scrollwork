@@ -23,6 +23,8 @@
     skill: melee
     hit: "You slash {name}."
     miss: "You miss {name}."
+    hit_room: "{Name} slashes {name}."
+    miss_room: "{Name} misses {name}."
   value: 8
   durability: 40
   max_durability: 40
@@ -89,6 +91,8 @@
     skill: melee
     hit: "You strike {name} with the cudgel."
     miss: "You swing wide of {name}."
+    hit_room: "{Name} strikes {name} with the cudgel."
+    miss_room: "{Name} swings wide of {name}."
   durability: 35
   max_durability: 35
   repairable: true
