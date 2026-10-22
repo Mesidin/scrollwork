@@ -60,6 +60,9 @@ You need the matching key in inventory to lock or unlock.
 ```
 say <text>           or  'text
 emote <text>         or  :text
+tell <who> <text>    private message to a player
+gossip / ooc <text>  broadcast message to all connected players
+who                  list connected players, roles, and vitals
 ask <who> about <topic>
 talk <who>            list topics they might know
 ```
@@ -70,7 +73,11 @@ talk <who>            list topics they might know
 follow / fol [who]       follow someone or check who you follow and who follows you
 unfollow / unfol         stop following your leader
 lose / ditch / shake <who> shake off someone following you
-group / party / gt       display active party members, health, and status
+group / party            display active party members, health, and status
+party invite|join|leave|disband|disown
+                       same as group
+party <text>             talk to party members across rooms
+gt <text>                party chat only; gt leave says the word leave
 invite <who>             invite a companion or player to join your party
 join <who>               join another party (if invited or open)
 order / command <pet> <act> order a pet you own: follow, stay, stance, attack, dismiss

@@ -40,6 +40,10 @@ type Session struct {
 	stalledTicks int
 	pending      []protocol.Event
 	closed       bool
+	cmdQueue     []string
+	inflight     int
+	monitored    bool
+	pumpStop     chan struct{}
 }
 
 func isCoalescable(ev protocol.Event) bool {
@@ -149,6 +153,122 @@ func (s *Session) flushLocked() {
 	}
 }
 
+func (s *Session) EnqueueCommand(line string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.cmdQueue = append(s.cmdQueue, line)
+	return true
+}
+
+func (s *Session) trackCommand() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.inflight++
+	s.mu.Unlock()
+}
+
+func (s *Session) finishCommand() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.inflight > 0 {
+		s.inflight--
+	}
+	s.mu.Unlock()
+}
+
+func (s *Session) commandsInFlight() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inflight
+}
+
+func (s *Session) stopInput() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pumpStop == nil {
+		return
+	}
+	select {
+	case <-s.pumpStop:
+	default:
+		close(s.pumpStop)
+	}
+}
+
+func (s *Session) PopCommand() (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.cmdQueue) == 0 {
+		return "", false
+	}
+	cmd := s.cmdQueue[0]
+	s.cmdQueue = s.cmdQueue[1:]
+	return cmd, true
+}
+
+func (s *Session) QueuedCommands() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.cmdQueue))
+	copy(out, s.cmdQueue)
+	return out
+}
+
+func (s *Session) CommandQueueLen() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.cmdQueue)
+}
+
+type ServerMsg interface {
+	isServerMsg()
+}
+
+type CommandMsg struct {
+	Session *Session
+	Line    string
+}
+
+func (CommandMsg) isServerMsg() {}
+
+type ConnectMsg struct {
+	Session *Session
+}
+
+func (ConnectMsg) isServerMsg() {}
+
+type DisconnectMsg struct {
+	Session *Session
+	Reason  string
+}
+
+func (DisconnectMsg) isServerMsg() {}
+
 type Server struct {
 	Pack      *pack.Pack
 	World     *world.World
@@ -156,6 +276,7 @@ type Server struct {
 	Combat    *combat.Engine
 	Session   *Session
 	Sessions  map[string]*Session
+	In        chan ServerMsg
 	Env       *weather.Environment
 	rng       *rand.Rand
 	localQuit bool
@@ -214,7 +335,85 @@ func (s *Server) AttachSession(sess *Session) {
 	if s.Sessions == nil {
 		s.Sessions = make(map[string]*Session)
 	}
+	if s.In == nil {
+		s.In = make(chan ServerMsg, 128)
+	}
 	s.Sessions[sess.ID] = sess
+	s.monitorSessionIn(sess)
+}
+
+func (s *Server) monitorSessionIn(sess *Session) {
+	if s == nil || sess == nil || sess.In == nil {
+		return
+	}
+	sess.mu.Lock()
+	if sess.monitored {
+		sess.mu.Unlock()
+		return
+	}
+	sess.monitored = true
+	if sess.pumpStop == nil {
+		sess.pumpStop = make(chan struct{})
+	}
+	stop := sess.pumpStop
+	sess.mu.Unlock()
+	go func() {
+		for {
+			select {
+			case <-stop:
+				for {
+					select {
+					case line, ok := <-sess.In:
+						if !ok {
+							return
+						}
+						s.Enqueue(sess, line)
+					default:
+						return
+					}
+				}
+			case line, ok := <-sess.In:
+				if !ok {
+					return
+				}
+				s.Enqueue(sess, line)
+			}
+		}
+	}()
+}
+
+func (s *Server) Enqueue(sess *Session, line string) {
+	if s == nil || sess == nil {
+		return
+	}
+	if sess.Closed() {
+		return
+	}
+	if s.In == nil {
+		s.In = make(chan ServerMsg, 128)
+	}
+	sess.trackCommand()
+	s.In <- CommandMsg{Session: sess, Line: line}
+}
+
+func (s *Server) EnqueueConnect(sess *Session) {
+	if s == nil || sess == nil {
+		return
+	}
+	if s.In == nil {
+		s.In = make(chan ServerMsg, 128)
+	}
+	s.In <- ConnectMsg{Session: sess}
+}
+
+func (s *Server) EnqueueDisconnect(sess *Session, reason string) {
+	if s == nil || sess == nil {
+		return
+	}
+	if s.In == nil {
+		s.In = make(chan ServerMsg, 128)
+	}
+	s.In <- DisconnectMsg{Session: sess, Reason: reason}
 }
 
 func (s *Server) SpawnPlayerSession(name, raceID, roleID string) (*Session, *world.Entity) {
@@ -283,12 +482,16 @@ type Options struct {
 	PlayerName string
 	RaceID     string
 	RoleID     string
+	TickMS     int
 }
 
 func Launch(opt Options) (*Server, *Session, error) {
 	p, err := pack.Load(opt.PackDir)
 	if err != nil {
 		return nil, nil, err
+	}
+	if opt.TickMS > 0 {
+		p.Meta.TickMS = opt.TickMS
 	}
 	var w *world.World
 	if opt.Mode != protocol.ModeBuild {
@@ -334,9 +537,11 @@ func Launch(opt Options) (*Server, *Session, error) {
 		Scripts:  h,
 		Session:  sess,
 		Sessions: map[string]*Session{sess.ID: sess},
+		In:       make(chan ServerMsg, 128),
 		Env:      weather.New(p.Meta.TickMS, p.Time, p.Weather),
 		rng:      rand.New(rand.NewSource(seed)),
 	}
+	srv.monitorSessionIn(sess)
 	if w.WeatherState != "" {
 		srv.Env.CurrentWeather = w.WeatherState
 	}
@@ -450,6 +655,19 @@ func endFight(w *world.World, e *world.Entity) {
 }
 
 func (s *Server) Run(ctx context.Context) {
+	if s.In == nil {
+		s.In = make(chan ServerMsg, 128)
+	}
+	if s.Sessions == nil {
+		s.Sessions = make(map[string]*Session)
+	}
+	if s.Session != nil && s.Sessions[s.Session.ID] == nil {
+		s.Sessions[s.Session.ID] = s.Session
+	}
+	for _, sess := range s.allSessions() {
+		s.monitorSessionIn(sess)
+	}
+
 	tick := time.Duration(s.Pack.Meta.TickMS) * time.Millisecond
 	if tick <= 0 {
 		tick = 250 * time.Millisecond
@@ -470,11 +688,33 @@ func (s *Server) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.tick()
-		case line, ok := <-s.Session.In:
+		case msg, ok := <-s.In:
 			if !ok {
 				return
 			}
-			s.handle(line)
+			s.handleServerMsg(msg)
+		}
+	}
+}
+
+func (s *Server) handleServerMsg(msg ServerMsg) {
+	switch m := msg.(type) {
+	case ConnectMsg:
+		if m.Session != nil {
+			s.AttachSession(m.Session)
+			s.greet(m.Session)
+			s.pushUI(m.Session)
+		}
+	case DisconnectMsg:
+		if m.Session != nil {
+			s.disconnect(m.Session, m.Reason)
+		}
+	case CommandMsg:
+		if m.Session == nil {
+			break
+		}
+		if !m.Session.EnqueueCommand(m.Line) {
+			m.Session.finishCommand()
 		}
 	}
 }
@@ -513,6 +753,7 @@ func (s *Server) disconnect(sess *Session, reason string) {
 	}
 	sess.quit = false
 	sess.Disconnect(reason)
+	sess.stopInput()
 }
 
 func (s *Server) greet(sessions ...*Session) {
@@ -570,6 +811,24 @@ func (s *Server) ctx(session ...*Session) *commands.Context {
 				exc = except[0]
 			}
 			s.sendRoom(room, exc, protocol.TextEvent{Channel: ch, Text: text})
+		},
+		TellPlayer: func(player *world.Entity, ch protocol.Channel, text string) {
+			s.sendTo(player, protocol.TextEvent{Channel: ch, Text: text})
+		},
+		Broadcast: func(ch protocol.Channel, text string) {
+			ev := protocol.TextEvent{Channel: ch, Text: text}
+			for _, ses := range s.allSessions() {
+				ses.Send(ev)
+			}
+		},
+		ConnectedPlayers: func() []*world.Entity {
+			var out []*world.Entity
+			for _, ses := range s.allSessions() {
+				if pl := s.World.Get(ses.PlayerID); pl != nil {
+					out = append(out, pl)
+				}
+			}
+			return out
 		},
 		OnMove: func(act, old, dest *world.Entity, dir string) {
 			if old != nil {
@@ -728,6 +987,12 @@ func (s *Server) afterCommand() {
 func (s *Server) tick() {
 	s.World.Tick++
 	now := s.World.Tick
+	for _, sess := range s.allSessions() {
+		if cmd, ok := sess.PopCommand(); ok {
+			s.handleSession(sess, cmd)
+			sess.finishCommand()
+		}
+	}
 	var stalled []*Session
 	for _, sess := range s.allSessions() {
 		if sess.Out != nil && cap(sess.Out) > 0 && len(sess.Out) == cap(sess.Out) {
@@ -754,6 +1019,11 @@ func (s *Server) tick() {
 	s.pushVitals()
 	s.pushCombat()
 	s.pushPrompt()
+}
+
+// Tick lets tests step one tick without Run.
+func (s *Server) Tick() {
+	s.tick()
 }
 
 func (s *Server) processRespawns() {

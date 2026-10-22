@@ -30,21 +30,24 @@ type Context struct {
 	RNG     *rand.Rand
 	Env     *weather.Environment
 
-	Tell           func(channel protocol.Channel, text string)
-	TellRoom       func(room *world.Entity, channel protocol.Channel, text string, except ...*world.Entity)
-	OnMove         func(actor, old, dest *world.Entity, dir string)
-	OnFollowerMove func(follower, old, dest, leader *world.Entity, dir string)
-	Quit           func()
-	SaveSnap       func(slot string) error
-	LoadSnap       func(slot string) error
-	SavePack       func() error
-	ReloadScripts  func() error
-	StartFight     func(mob *world.Entity)
-	Assist         func(target *world.Entity, leaderAttacking bool)
-	BuildWalk      *bool
-	OnMoveFail     func(dir string) bool // buildwalk hook; return true if handled
-	After          func()                // push UI
-	BeginCapture   func(done func(text string))
+	Tell             func(channel protocol.Channel, text string)
+	TellRoom         func(room *world.Entity, channel protocol.Channel, text string, except ...*world.Entity)
+	OnMove           func(actor, old, dest *world.Entity, dir string)
+	OnFollowerMove   func(follower, old, dest, leader *world.Entity, dir string)
+	Quit             func()
+	SaveSnap         func(slot string) error
+	LoadSnap         func(slot string) error
+	SavePack         func() error
+	ReloadScripts    func() error
+	StartFight       func(mob *world.Entity)
+	Assist           func(target *world.Entity, leaderAttacking bool)
+	BuildWalk        *bool
+	OnMoveFail       func(dir string) bool // buildwalk hook; return true if handled
+	After            func()                // push UI
+	BeginCapture     func(done func(text string))
+	TellPlayer       func(player *world.Entity, channel protocol.Channel, text string)
+	Broadcast        func(channel protocol.Channel, text string)
+	ConnectedPlayers func() []*world.Entity
 }
 
 func (c *Context) Print(format string, args ...any) {
@@ -129,6 +132,10 @@ func init() {
 	register("unfollow", unfollowCmd)
 	register("lose", loseCmd)
 	register("group", groupCmd)
+	register("party", partyCmd)
+	register("gt", partyCmd)
+	register("tell", tellCmd)
+	register("gossip", gossipCmd)
 	register("invite", inviteCmd)
 	register("join", joinCmd)
 	register("order", orderCmd)
@@ -1102,6 +1109,10 @@ func kill(c *Context, p Parsed) {
 		c.Print("You consider it, then think better of it.")
 		return
 	}
+	if e.Kind == world.KindPlayer {
+		c.Print("You cannot attack other players here.")
+		return
+	}
 	if c.Actor.Combat == nil {
 		c.Actor.Combat = &world.Combat{RoundSpeed: c.Pack.Meta.CombatEvery, Attacks: []world.Attack{{Name: "strike", Damage: "1d6"}}}
 	}
@@ -1668,7 +1679,183 @@ func flameWontCatch(c *Context) bool {
 }
 
 func who(c *Context, _ Parsed) {
-	c.Print("Players: %s", c.Actor.Name)
+	var players []*world.Entity
+	if c.ConnectedPlayers != nil {
+		players = c.ConnectedPlayers()
+	} else if c.World != nil {
+		for _, e := range c.World.Entities {
+			if e != nil && e.Kind == world.KindPlayer {
+				players = append(players, e)
+			}
+		}
+	}
+	if len(players) == 0 && c.Actor != nil {
+		players = []*world.Entity{c.Actor}
+	}
+	sort.Slice(players, func(i, j int) bool {
+		return players[i].Name < players[j].Name
+	})
+	c.Print("Connected Players:")
+	for _, p := range players {
+		role := p.RoleName
+		if role == "" {
+			role = "Adventurer"
+		}
+		resStr := ""
+		if c.Pack != nil {
+			key := c.Pack.RPG.Primary()
+			if r, ok := p.Resources[key]; ok {
+				lbl := c.Pack.Lexicon.Label(key)
+				if lbl == "" {
+					lbl = key
+				}
+				resStr = fmt.Sprintf(" (%s: %d/%d)", lbl, r.Current, r.Max)
+			}
+		}
+		c.Print("  %s - %s%s", p.Name, role, resStr)
+	}
+}
+
+func tellCmd(c *Context, p Parsed) {
+	if len(p.Args) < 1 {
+		c.Print("Tell whom what? Usage: tell <player> <message>")
+		return
+	}
+	targetName := p.Args[0]
+	message := strings.TrimSpace(p.Rest[len(targetName):])
+	if message == "" {
+		c.Print("What do you want to tell %s?", targetName)
+		return
+	}
+
+	if strings.EqualFold(targetName, "me") || strings.EqualFold(targetName, "self") || (c.Actor != nil && strings.EqualFold(targetName, c.Actor.Name)) {
+		c.Print("Talking to yourself?")
+		return
+	}
+
+	target, n := connectedMatch(c, targetName)
+	if n == 0 {
+		c.Print("Nobody by that name is connected.")
+		return
+	}
+	if n > 1 {
+		c.Print("More than one player matches.")
+		return
+	}
+	if c.Actor != nil && target.ID == c.Actor.ID {
+		c.Print("Talking to yourself?")
+		return
+	}
+
+	if c.TellPlayer != nil {
+		c.TellPlayer(target, protocol.ChanSay, fmt.Sprintf("%s tells you, \"%s\"", c.Actor.CapDisplay(), message))
+	}
+	c.Say("You tell %s, \"%s\"", target.CapDisplay(), message)
+}
+
+func connectedMatch(c *Context, token string) (*world.Entity, int) {
+	if c == nil || c.ConnectedPlayers == nil {
+		return nil, 0
+	}
+	var match *world.Entity
+	n := 0
+	for _, e := range c.ConnectedPlayers() {
+		if e == nil || e.Kind != world.KindPlayer {
+			continue
+		}
+		if strings.EqualFold(e.Name, token) || strings.EqualFold(string(e.ID), token) {
+			n++
+			match = e
+		}
+	}
+	return match, n
+}
+
+func typedVerb(p Parsed) string {
+	fields := strings.Fields(p.Raw)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.ToLower(fields[0])
+}
+
+func gossipCmd(c *Context, p Parsed) {
+	text := strings.TrimSpace(p.Rest)
+	if text == "" {
+		c.Print("Gossip what? Usage: gossip <message>")
+		return
+	}
+	line := fmt.Sprintf("%s gossips, \"%s\"", c.Actor.CapDisplay(), text)
+	if c.Broadcast != nil {
+		c.Broadcast(protocol.ChanSystem, line)
+	} else {
+		c.Tell(protocol.ChanSystem, line)
+	}
+}
+
+func partyCmd(c *Context, p Parsed) {
+	if typedVerb(p) == "party" {
+		if len(p.Args) == 0 {
+			showParty(c)
+			return
+		}
+		sub := strings.ToLower(p.Args[0])
+		if sub == "invite" || sub == "join" || sub == "leave" || sub == "disband" || sub == "disown" {
+			groupCmd(c, p)
+			return
+		}
+	}
+	text := strings.TrimSpace(p.Rest)
+	if text == "" {
+		c.Print("Tell the party what? Usage: party <message> or gt <message>")
+		return
+	}
+
+	leaderID := c.Actor.PartyLeader
+	if leaderID == "" {
+		leaderID = c.Actor.ID
+	}
+	members := c.World.PartyMembers(leaderID)
+	var others []*world.Entity
+	for _, m := range members {
+		if m != nil && c.Actor != nil && m.ID != c.Actor.ID {
+			others = append(others, m)
+		}
+	}
+	if len(others) == 0 {
+		c.Print("You are not in a party.")
+		return
+	}
+	hearers := connectedParty(c, others)
+	if len(hearers) == 0 {
+		c.Print("Nobody in the party is connected.")
+		return
+	}
+
+	c.Say("You tell the party, \"%s\"", text)
+	for _, m := range hearers {
+		if c.TellPlayer != nil {
+			c.TellPlayer(m, protocol.ChanSay, fmt.Sprintf("%s tells the party, \"%s\"", c.Actor.CapDisplay(), text))
+		}
+	}
+}
+
+func connectedParty(c *Context, others []*world.Entity) []*world.Entity {
+	live := map[world.ID]bool{}
+	if c != nil && c.ConnectedPlayers != nil {
+		for _, e := range c.ConnectedPlayers() {
+			if e != nil {
+				live[e.ID] = true
+			}
+		}
+	}
+	var hearers []*world.Entity
+	for _, m := range others {
+		if m != nil && m.Kind == world.KindPlayer && live[m.ID] {
+			hearers = append(hearers, m)
+		}
+	}
+	return hearers
 }
 
 func timeCmd(c *Context, _ Parsed) {

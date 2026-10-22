@@ -364,3 +364,319 @@ func TestStage1QueueCoalescing(t *testing.T) {
 		t.Fatalf("full text queue dropped or reordered: %v", all)
 	}
 }
+
+func TestStage2CommandQueueRateLimit(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, sess, err := server.Launch(server.Options{PackDir: dir, Mode: protocol.ModePlay, Seed: 1, PlayerName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainEvents(sess)
+
+	// Queue two commands: first "look", second "say second command"
+	sess.EnqueueCommand("look")
+	sess.EnqueueCommand("say second command")
+
+	if len(sess.QueuedCommands()) != 2 {
+		t.Fatalf("expected 2 queued commands, got %d", len(sess.QueuedCommands()))
+	}
+
+	// First tick: only "look" should be executed
+	srv.Tick()
+
+	if len(sess.QueuedCommands()) != 1 {
+		t.Fatalf("expected 1 command remaining in queue after tick 1, got %d", len(sess.QueuedCommands()))
+	}
+	evs1 := drainEvents(sess)
+	roomEvs1 := filterRoomEvents(evs1)
+	if len(roomEvs1) == 0 {
+		t.Fatal("expected RoomEvent from 'look' on tick 1")
+	}
+	for _, te := range filterTextEvents(evs1) {
+		if strings.Contains(te.Text, "second command") {
+			t.Fatal("second command ran prematurely on tick 1")
+		}
+	}
+
+	// Second tick: "say second command" should now be executed
+	srv.Tick()
+
+	if len(sess.QueuedCommands()) != 0 {
+		t.Fatalf("expected 0 commands remaining in queue after tick 2, got %d", len(sess.QueuedCommands()))
+	}
+	evs2 := drainEvents(sess)
+	foundSay := false
+	for _, te := range filterTextEvents(evs2) {
+		if strings.Contains(te.Text, "second command") {
+			foundSay = true
+			break
+		}
+	}
+	if !foundSay {
+		t.Fatal("expected 'second command' text event on tick 2")
+	}
+}
+
+func TestStage2TellPrivacy(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, ada, err := server.Launch(server.Options{PackDir: dir, Mode: protocol.ModePlay, Seed: 1, PlayerName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, _ := srv.SpawnPlayerSession("Bob", "", "")
+	charlie, _ := srv.SpawnPlayerSession("Charlie", "", "")
+	drainEvents(ada)
+	drainEvents(bob)
+	drainEvents(charlie)
+
+	// Ada tells Bob
+	adaEvs := filterTextEvents(srv.HandleSessionLine(ada, "tell Bob meet me in the cellar"))
+
+	// Bob hears the tell on ChanSay
+	bobEvs := filterTextEvents(drainEvents(bob))
+	if len(bobEvs) != 1 {
+		t.Fatalf("expected Bob to receive 1 event, got %d: %v", len(bobEvs), bobEvs)
+	}
+	if bobEvs[0].Channel != protocol.ChanSay || !strings.Contains(bobEvs[0].Text, "Ada tells you") || !strings.Contains(bobEvs[0].Text, "meet me in the cellar") {
+		t.Fatalf("unexpected message to Bob: %v", bobEvs[0])
+	}
+
+	// Ada receives the echo on ChanSay
+	if len(adaEvs) != 1 {
+		t.Fatalf("expected Ada to receive 1 echo, got %d: %v", len(adaEvs), adaEvs)
+	}
+	if adaEvs[0].Channel != protocol.ChanSay || !strings.Contains(adaEvs[0].Text, "You tell Bob") || !strings.Contains(adaEvs[0].Text, "meet me in the cellar") {
+		t.Fatalf("unexpected echo to Ada: %v", adaEvs[0])
+	}
+
+	// Charlie hears nothing
+	charlieEvs := drainEvents(charlie)
+	if len(charlieEvs) != 0 {
+		t.Fatalf("Charlie should not hear private tell, got: %v", charlieEvs)
+	}
+
+	// Self-tell
+	adaSelf := filterTextEvents(srv.HandleSessionLine(ada, "tell Ada hello"))
+	if len(adaSelf) == 0 || !strings.Contains(adaSelf[0].Text, "Talking to yourself?") {
+		t.Fatalf("expected self-tell refusal, got: %v", adaSelf)
+	}
+
+	// Unknown player
+	adaUnknown := filterTextEvents(srv.HandleSessionLine(ada, "tell Nobody hello"))
+	if len(adaUnknown) == 0 || !strings.Contains(adaUnknown[0].Text, "Nobody by that name is connected.") {
+		t.Fatalf("expected unknown player error, got: %v", adaUnknown)
+	}
+
+	bob.Disconnect("test")
+	adaGone := filterTextEvents(srv.HandleSessionLine(ada, "tell Bob still there?"))
+	if len(adaGone) == 0 || !strings.Contains(adaGone[0].Text, "Nobody by that name is connected.") || strings.Contains(adaGone[0].Text, "You tell") {
+		t.Fatalf("disconnected tell should not claim success, got: %v", adaGone)
+	}
+
+	adaSelfID := filterTextEvents(srv.HandleSessionLine(ada, "tell player hello"))
+	if len(adaSelfID) == 0 || !strings.Contains(adaSelfID[0].Text, "Talking to yourself?") {
+		t.Fatalf("tell by own id should refuse, got: %v", adaSelfID)
+	}
+}
+
+func TestStage2Who(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, ada, err := server.Launch(server.Options{PackDir: dir, Mode: protocol.ModePlay, Seed: 1, PlayerName: "Ada", RoleID: "careful"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = srv.SpawnPlayerSession("Bob", "", "reckless")
+	drainEvents(ada)
+
+	evs := filterTextEvents(srv.HandleSessionLine(ada, "who"))
+	var all []string
+	for _, te := range evs {
+		all = append(all, te.Text)
+	}
+	output := strings.Join(all, "\n")
+
+	// Both characters listed
+	if !strings.Contains(output, "Ada") || !strings.Contains(output, "Bob") {
+		t.Fatalf("expected both Ada and Bob in who output, got:\n%s", output)
+	}
+
+	// Role name shown
+	if !strings.Contains(output, "Careful") || !strings.Contains(output, "Reckless") {
+		t.Fatalf("expected role names in who output, got:\n%s", output)
+	}
+
+	// Primary resource shown (Calm or Grit)
+	if !strings.Contains(output, "Calm:") && !strings.Contains(output, "Grit:") {
+		t.Fatalf("expected primary resource in who output, got:\n%s", output)
+	}
+
+	// No level column
+	if strings.Contains(strings.ToLower(output), "level") || strings.Contains(strings.ToLower(output), "lvl") {
+		t.Fatalf("who output must not include a level column, got:\n%s", output)
+	}
+}
+
+func TestStage2Gossip(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, ada, err := server.Launch(server.Options{PackDir: dir, Mode: protocol.ModePlay, Seed: 1, PlayerName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, entBob := srv.SpawnPlayerSession("Bob", "", "")
+	_ = srv.World.Move(entBob.ID, "house.foyer") // Bob in another room
+	drainEvents(ada)
+	drainEvents(bob)
+
+	adaEvs := filterTextEvents(srv.HandleSessionLine(ada, "gossip the sun is rising"))
+
+	// Both hear gossip on ChanSystem
+	if len(adaEvs) != 1 || adaEvs[0].Channel != protocol.ChanSystem || !strings.Contains(adaEvs[0].Text, "Ada gossips") {
+		t.Fatalf("unexpected gossip for Ada: %v", adaEvs)
+	}
+	bobEvs := filterTextEvents(drainEvents(bob))
+	if len(bobEvs) != 1 || bobEvs[0].Channel != protocol.ChanSystem || !strings.Contains(bobEvs[0].Text, "Ada gossips") {
+		t.Fatalf("unexpected gossip for Bob across rooms: %v", bobEvs)
+	}
+
+	// Test ooc alias
+	_ = srv.HandleSessionLine(bob, "ooc hello all")
+	adaOOC := filterTextEvents(drainEvents(ada))
+	if len(adaOOC) != 1 || adaOOC[0].Channel != protocol.ChanSystem || !strings.Contains(adaOOC[0].Text, "Bob gossips") {
+		t.Fatalf("unexpected ooc for Ada: %v", adaOOC)
+	}
+}
+
+func TestStage2PartyChat(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, ada, err := server.Launch(server.Options{PackDir: dir, Mode: protocol.ModePlay, Seed: 1, PlayerName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, entBob := srv.SpawnPlayerSession("Bob", "", "")
+	charlie, _ := srv.SpawnPlayerSession("Charlie", "", "")
+	entAda := srv.World.Get(ada.PlayerID)
+
+	// Bob is in Ada's party, but in a different room
+	entAda.PartyLeader = entAda.ID
+	entBob.PartyLeader = entAda.ID
+	_ = srv.World.Move(entBob.ID, "house.foyer")
+	drainEvents(ada)
+	drainEvents(bob)
+	drainEvents(charlie)
+
+	// Ada sends party chat via 'party'
+	adaEvs := filterTextEvents(srv.HandleSessionLine(ada, "party we move at dawn"))
+
+	// Ada receives echo on ChanSay
+	if len(adaEvs) != 1 || adaEvs[0].Channel != protocol.ChanSay || !strings.Contains(adaEvs[0].Text, "You tell the party") {
+		t.Fatalf("unexpected party echo for Ada: %v", adaEvs)
+	}
+
+	// Bob receives party message across rooms on ChanSay
+	bobEvs := filterTextEvents(drainEvents(bob))
+	if len(bobEvs) != 1 || bobEvs[0].Channel != protocol.ChanSay || !strings.Contains(bobEvs[0].Text, "Ada tells the party") {
+		t.Fatalf("unexpected party message for Bob: %v", bobEvs)
+	}
+
+	// Charlie is not in the party and hears nothing
+	charlieEvs := drainEvents(charlie)
+	if len(charlieEvs) != 0 {
+		t.Fatalf("Charlie should not hear party chat, got: %v", charlieEvs)
+	}
+
+	// Test 'gt' alias
+	_ = srv.HandleSessionLine(bob, "gt understood leader")
+	adaGT := filterTextEvents(drainEvents(ada))
+	if len(adaGT) != 1 || !strings.Contains(adaGT[0].Text, "Bob tells the party") {
+		t.Fatalf("unexpected gt message for Ada: %v", adaGT)
+	}
+
+	// Non-party player using party chat gets refusal
+	charlieMsg := filterTextEvents(srv.HandleSessionLine(charlie, "gt hello?"))
+	if len(charlieMsg) == 0 || !strings.Contains(charlieMsg[0].Text, "not in a party") {
+		t.Fatalf("expected non-party refusal for Charlie, got: %v", charlieMsg)
+	}
+
+	// gt is chat. It does not run party subcommands.
+	bobGT := filterTextEvents(srv.HandleSessionLine(bob, "gt leave"))
+	if len(bobGT) == 0 || !strings.Contains(bobGT[0].Text, "You tell the party") {
+		t.Fatalf("gt leave should be chat, got: %v", bobGT)
+	}
+	if entBob.PartyLeader != entAda.ID {
+		t.Fatalf("gt leave changed the party, leader %s", entBob.PartyLeader)
+	}
+	adaLeave := filterTextEvents(drainEvents(ada))
+	if len(adaLeave) == 0 || !strings.Contains(adaLeave[0].Text, "leave") {
+		t.Fatalf("Ada should hear the word leave, got: %v", adaLeave)
+	}
+
+	left := filterTextEvents(srv.HandleSessionLine(bob, "party leave"))
+	if entBob.PartyLeader != "" {
+		t.Fatalf("party leave should drop Bob, leader %s, lines %v", entBob.PartyLeader, left)
+	}
+}
+
+func TestStage2PartyNeedsAConnectedMember(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, ada, err := server.Launch(server.Options{PackDir: dir, Mode: protocol.ModePlay, Seed: 1, PlayerName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, entBob := srv.SpawnPlayerSession("Bob", "", "")
+	entAda := srv.World.Get(ada.PlayerID)
+	entAda.PartyLeader = entAda.ID
+	entBob.PartyLeader = entAda.ID
+	bob.Disconnect("test")
+	drainEvents(ada)
+
+	evs := filterTextEvents(srv.HandleSessionLine(ada, "party hello"))
+	if len(evs) == 0 || !strings.Contains(evs[0].Text, "Nobody in the party is connected.") || strings.Contains(evs[0].Text, "You tell the party") {
+		t.Fatalf("party chat should not claim a disconnected member heard it, got: %v", evs)
+	}
+}
+
+func TestStage2TellIsUnambiguous(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, ada, err := server.Launch(server.Options{PackDir: dir, Mode: protocol.ModePlay, Seed: 1, PlayerName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, entBob := srv.SpawnPlayerSession("Bob", "", "")
+	charlie, entCharlie := srv.SpawnPlayerSession("Charlie", "", "")
+	entBob.Name = "Sam"
+	entCharlie.Name = "Sam"
+	drainEvents(ada)
+	drainEvents(bob)
+	drainEvents(charlie)
+
+	adaEvs := filterTextEvents(srv.HandleSessionLine(ada, "tell Sam hello"))
+	if len(adaEvs) == 0 || !strings.Contains(adaEvs[0].Text, "More than one player matches.") || strings.Contains(adaEvs[0].Text, "You tell") {
+		t.Fatalf("ambiguous tell should not send, got: %v", adaEvs)
+	}
+	if len(drainEvents(bob)) != 0 || len(drainEvents(charlie)) != 0 {
+		t.Fatal("ambiguous tell reached a Sam")
+	}
+}
+
+func TestStage2KillPlayerRefusal(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, ada, err := server.Launch(server.Options{PackDir: dir, Mode: protocol.ModePlay, Seed: 1, PlayerName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, entBob := srv.SpawnPlayerSession("Bob", "", "")
+	entAda := srv.World.Get(ada.PlayerID)
+	drainEvents(ada)
+	drainEvents(bob)
+
+	// Ada attempts to attack Bob
+	evs := filterTextEvents(srv.HandleSessionLine(ada, "kill Bob"))
+	if len(evs) == 0 || !strings.Contains(evs[0].Text, "You cannot attack other players here.") {
+		t.Fatalf("expected calm attack refusal on player, got: %v", evs)
+	}
+
+	// Neither is in combat
+	if entAda.InCombat() || entBob.InCombat() {
+		t.Fatalf("neither player should be in combat: Ada=%v, Bob=%v", entAda.InCombat(), entBob.InCombat())
+	}
+}

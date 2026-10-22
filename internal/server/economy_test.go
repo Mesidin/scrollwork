@@ -558,22 +558,22 @@ func TestPriceCurveServerIntegration(t *testing.T) {
 	goran.Shop.Purse = 50
 
 	d1 := &world.Entity{
-		ID:            "dag1",
-		PrototypeID:   "item.dagger",
-		Kind:          world.KindItem,
-		Keywords:      []string{"dagger"},
-		Name:          "an iron dagger",
-		Value:         10,
-		Takeable:      true,
+		ID:          "dag1",
+		PrototypeID: "item.dagger",
+		Kind:        world.KindItem,
+		Keywords:    []string{"dagger"},
+		Name:        "an iron dagger",
+		Value:       10,
+		Takeable:    true,
 	}
 	d2 := &world.Entity{
-		ID:            "dag2",
-		PrototypeID:   "item.dagger",
-		Kind:          world.KindItem,
-		Keywords:      []string{"dagger"},
-		Name:          "an iron dagger",
-		Value:         10,
-		Takeable:      true,
+		ID:          "dag2",
+		PrototypeID: "item.dagger",
+		Kind:        world.KindItem,
+		Keywords:    []string{"dagger"},
+		Name:        "an iron dagger",
+		Value:       10,
+		Takeable:    true,
 	}
 	srv.World.Add(d1)
 	srv.World.Add(d2)

@@ -4,10 +4,61 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"sudengine/internal/protocol"
 	"sudengine/internal/world"
 )
+
+func TestQueuedQuitRunsBeforeStall(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, sess, err := Launch(Options{PackDir: dir, Mode: protocol.ModePlay, Seed: 1, PlayerName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for len(sess.Out) < cap(sess.Out) {
+		sess.Out <- protocol.TextEvent{Channel: protocol.ChanNarrative, Text: "pad"}
+	}
+	srv.Tick()
+	if sess.stalledTicks != 1 {
+		t.Fatalf("expected one full tick, got %d", sess.stalledTicks)
+	}
+	sess.EnqueueCommand("quit")
+	srv.Tick()
+	if sess.CommandQueueLen() != 0 {
+		t.Fatal("quit was still queued")
+	}
+	if !sess.Closed() {
+		t.Fatal("quit did not close the session")
+	}
+	if !hasDisconnect(sess.pending, "quit") {
+		t.Fatalf("expected quit disconnect, pending: %+v", sess.pending)
+	}
+	if hasDisconnect(sess.pending, "stalled") {
+		t.Fatal("stall disconnect replaced quit")
+	}
+}
+
+func TestInputPumpStopsOnDisconnect(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, sess, err := Launch(Options{PackDir: dir, Mode: protocol.ModePlay, Seed: 1, PlayerName: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.disconnect(sess, "test")
+	time.Sleep(20 * time.Millisecond)
+	sent := 0
+	for i := 0; i < cap(sess.In)+1; i++ {
+		select {
+		case sess.In <- "look":
+			sent++
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if sent != cap(sess.In) {
+		t.Fatalf("pump still reading input, sent %d cap %d", sent, cap(sess.In))
+	}
+}
 
 func TestStage1QuitDoesNotStopTheOtherSession(t *testing.T) {
 	dir := filepath.Join("..", "..", "games", "old-house")

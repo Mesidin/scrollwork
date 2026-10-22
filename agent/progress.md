@@ -4,11 +4,11 @@ This document records the chronological development history, verified features, 
 
 ---
 
-## Current Status (as of Oct 19, 2026)
+## Current Status (as of Oct 22, 2026)
 
 * **Engine**: Go 1.22+ Bubble Tea MUD engine with runtime YAML+Lua pack loading.
 * **Test Suite**: `go test ./...` passing across all packages.
-* **Working Tree**: Clean. A swing's second-person line is private to the fighter. Everyone else hears a third-person line.
+* **Working Tree**: Clean. Stage 2 is the command queue, tell, who, gossip, and party. A swing's second-person line stays private to the fighter.
 * **Sample Packs**:
   * `games/old-house`: Core story regression pack.
   * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, economy, quests, and companion interactions.
@@ -358,6 +358,39 @@ This document records the chronological development history, verified features, 
   * Each swing gives the fighter the existing second-person line in private. Everyone else gets `hit_room` / `miss_room`, or a plain third-person sentence when those are omitted. The fighter does not also hear the room line. Two players in the same swing each get a second-person line, and the room line skips both.
   * Gear breaks, collapse, and assist calls stay private. `{Name} dies.` stays one room line. `Emit` takes an audience (`HearPrivate`, `HearRoom`, `HearOthers`) instead of a bool. Do not classify lines by their wording.
   * Sample attacks in Old House and Green Hollow set the room lines. `go test ./...` passed on Oct 19, 2026.
+
+## Milestone 16: Multiplayer Stage 2 — Command queue & multiplayer verbs (Oct 21, 2026)
+* **Server Command Channel & Rate Limiting (`internal/server/server.go`)**:
+  * Replaced `case line := <-s.Session.In` with unified server message channel `s.In chan ServerMsg`.
+  * Defined `ServerMsg` interface with `CommandMsg`, `ConnectMsg`, and `DisconnectMsg`.
+  * Added `cmdQueue []string` to `Session` with `EnqueueCommand(line)`, `PopCommand()`, `CommandQueueLen()`, and `QueuedCommands()`.
+  * Added session input pump (`monitorSessionIn`) so writes to `sess.In` automatically forward to `s.Enqueue(sess, line)`.
+  * Rate-limiting: `s.tick()` dequeues at most one command per session before running the heartbeat (weather, regen, AI, combat, respawns). Commands queued beyond one per tick wait for subsequent ticks.
+  * Added exported `s.Tick()` method for synchronous test execution.
+  * Added `TickMS int` override to `Options` and initialized server message channels and session pumps on `Run()`.
+* **Multiplayer Communication Verbs (`internal/commands/commands.go`, `internal/commands/parser.go`)**:
+  * `tell <player> <text>`: private message on `ChanSay` to target player (`<Speaker> tells you, "..."`) with echo to speaker (`You tell <Target>, "..."`). Does not leak to the room or third sessions. Handles self-tells and unknown players gracefully.
+  * `who`: lists all connected characters (`<Name> - <Role> (<Primary>:<Cur>/<Max>)`) with role name and primary resource. Omits any level column per design rules. Deterministic sorting by character name.
+  * `gossip <text>` (alias `ooc`): global system message on `ChanSystem` delivered to every connected session across all rooms (`<Speaker> gossips, "..."`).
+  * `party <text>` (alias `gt`): party chat on `ChanSay` delivered to all party members across rooms (`<Speaker> tells the party, "..."`) with echo to speaker (`You tell the party, "..."`). Uses `PartyLeader` without inventing a second group. Typing `party` without arguments displays the roster; party management subcommands (`invite`, `join`, `leave`, `disband`) continue to work.
+  * `kill <player>` refusal: attacking any entity with `Kind == world.KindPlayer` is calmly refused with `"You cannot attack other players here."`, preventing unintended PvP until room PvP flags exist.
+* **Documentation**:
+  * Added `tell`, `who`, `gossip` / `ooc`, and `party` / `gt` to engine player manual in `internal/docs/engine/commands.md`.
+* **Verification**:
+  * Added test suites in `internal/server/multiplayer_test.go`:
+    * `TestStage2CommandQueueRateLimit`: queues two commands, asserts first runs on tick 1, second waits, and second runs on tick 2.
+    * `TestStage2TellPrivacy`: verifies private delivery to target, echo to sender, privacy from third sessions, self-tell and unknown player handling.
+    * `TestStage2Who`: verifies all connected players listed with role name and primary resource, and confirms absence of a level column.
+    * `TestStage2Gossip`: verifies global broadcast across different rooms and tests `ooc` alias.
+    * `TestStage2PartyChat`: verifies party communication across rooms, `gt` alias, echo, isolation from non-party members, and non-party refusal.
+    * `TestStage2KillPlayerRefusal`: verifies calm refusal when attempting `kill <player>` and confirms neither player enters combat.
+  * All tests pass: `go test -count=1 ./...` including Old House playthrough (`TestOldHousePlaythrough`).
+* **Review fixes (Oct 21, 2026)**:
+  * `tell` reaches one connected player. A duplicate name, a disconnected character, or your own id does not echo success.
+  * Party chat is delivered only to members who still have a session. `gt` is chat, so `gt leave` does not leave the party.
+  * A queued `quit` runs before the stall check. The input pump stops when the session disconnects.
+  * Integration tests keep the pack tick and wait until the submitted command has finished.
+  * `go test ./...` passed on Oct 21, 2026.
 
 
 

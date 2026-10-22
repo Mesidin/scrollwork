@@ -39,6 +39,7 @@ func TestGreenHollowQuests(t *testing.T) {
 	defer cancel()
 	go srv.Run(ctx)
 
+	time.Sleep(30 * time.Millisecond)
 	drainLines(sess)
 
 	// 1. Talk to Bram - should see available quests

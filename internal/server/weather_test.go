@@ -115,20 +115,29 @@ func drainLines(sess *Session) []string {
 	if sess == nil {
 		return nil
 	}
-	sess.Flush()
+	deadline := time.Now().Add(3 * time.Second)
 	var lines []string
 	for {
-		select {
-		case ev, ok := <-sess.Out:
-			if !ok {
-				return lines
+		sess.Flush()
+		for {
+			select {
+			case ev, ok := <-sess.Out:
+				if !ok {
+					return lines
+				}
+				if te, ok := ev.(protocol.TextEvent); ok {
+					lines = append(lines, te.Text)
+				}
+			default:
+				goto checkDone
 			}
-			if te, ok := ev.(protocol.TextEvent); ok {
-				lines = append(lines, te.Text)
-			}
-		default:
+		}
+	checkDone:
+		busy := len(sess.In) > 0 || sess.CommandQueueLen() > 0 || sess.commandsInFlight() > 0
+		if !busy || time.Now().After(deadline) {
 			return lines
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
