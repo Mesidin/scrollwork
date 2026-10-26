@@ -46,6 +46,10 @@ type Session struct {
 	pumpStop     chan struct{}
 }
 
+// MaxQueuedCommands matches the local input buffer. A framed client must not
+// grow the per-session queue without a bound.
+const MaxQueuedCommands = 32
+
 func isCoalescable(ev protocol.Event) bool {
 	switch ev.(type) {
 	case protocol.VitalsEvent, protocol.MapEvent, protocol.CombatEvent, protocol.PromptEvent:
@@ -159,11 +163,37 @@ func (s *Session) EnqueueCommand(line string) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed || len(s.cmdQueue) >= MaxQueuedCommands {
 		return false
 	}
 	s.cmdQueue = append(s.cmdQueue, line)
 	return true
+}
+
+// AcceptsCommand reports whether another command can be queued without
+// passing MaxQueuedCommands. inflight counts commands accepted but not yet
+// finished, including ones still on the server channel.
+func (s *Session) AcceptsCommand() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	return len(s.cmdQueue) < MaxQueuedCommands && s.inflight < MaxQueuedCommands
+}
+
+// HasOutbound reports events waiting in the side queue or in Out.
+func (s *Session) HasOutbound() bool {
+	if s == nil || s.Out == nil {
+		return false
+	}
+	s.mu.Lock()
+	pending := len(s.pending) > 0
+	s.mu.Unlock()
+	return pending || len(s.Out) > 0
 }
 
 func (s *Session) trackCommand() {
@@ -258,6 +288,10 @@ func (CommandMsg) isServerMsg() {}
 
 type ConnectMsg struct {
 	Session *Session
+	Name    string
+	Race    string
+	Role    string
+	Command string
 }
 
 func (ConnectMsg) isServerMsg() {}
@@ -280,6 +314,8 @@ type Server struct {
 	Env       *weather.Environment
 	rng       *rand.Rand
 	localQuit bool
+	stopped   chan struct{}
+	stopOnce  sync.Once
 }
 
 func (s *Server) sessionFor(player *world.Entity) *Session {
@@ -382,44 +418,143 @@ func (s *Server) monitorSessionIn(sess *Session) {
 	}()
 }
 
-func (s *Server) Enqueue(sess *Session, line string) {
+func (s *Server) Enqueue(sess *Session, line string) bool {
 	if s == nil || sess == nil {
-		return
+		return false
 	}
-	if sess.Closed() {
-		return
-	}
-	if s.In == nil {
-		s.In = make(chan ServerMsg, 128)
+	if !s.waitCommandRoom(sess) {
+		return false
 	}
 	sess.trackCommand()
-	s.In <- CommandMsg{Session: sess, Line: line}
+	if !s.enqueueMsg(CommandMsg{Session: sess, Line: line}) {
+		sess.finishCommand()
+		return false
+	}
+	return true
 }
 
-func (s *Server) EnqueueConnect(sess *Session) {
+func (s *Server) EnqueueConnect(sess *Session, name, race, role, command string) bool {
 	if s == nil || sess == nil {
+		return false
+	}
+	return s.enqueueMsg(ConnectMsg{
+		Session: sess,
+		Name:    name,
+		Race:    race,
+		Role:    role,
+		Command: command,
+	})
+}
+
+func (s *Server) EnqueueDisconnect(sess *Session, reason string) bool {
+	if s == nil || sess == nil {
+		return false
+	}
+	return s.enqueueMsg(DisconnectMsg{Session: sess, Reason: reason})
+}
+
+func (s *Server) Stopped() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.stopped
+}
+
+func (s *Server) ensureRuntime() {
+	if s == nil {
 		return
 	}
 	if s.In == nil {
 		s.In = make(chan ServerMsg, 128)
 	}
-	s.In <- ConnectMsg{Session: sess}
+	if s.stopped == nil {
+		s.stopped = make(chan struct{})
+	}
+	if s.Sessions == nil {
+		s.Sessions = make(map[string]*Session)
+	}
 }
 
-func (s *Server) EnqueueDisconnect(sess *Session, reason string) {
-	if s == nil || sess == nil {
+func (s *Server) markStopped() {
+	if s == nil {
 		return
+	}
+	if s.stopped == nil {
+		s.stopped = make(chan struct{})
+	}
+	s.stopOnce.Do(func() { close(s.stopped) })
+}
+
+func (s *Server) isStopped() bool {
+	if s == nil || s.stopped == nil {
+		return false
+	}
+	select {
+	case <-s.stopped:
+		return true
+	default:
+		return false
+	}
+}
+
+// enqueueMsg hands msg to the actor. After Run has stopped, it returns
+// instead of blocking on a channel nobody reads.
+func (s *Server) enqueueMsg(msg ServerMsg) bool {
+	if s == nil {
+		return false
 	}
 	if s.In == nil {
 		s.In = make(chan ServerMsg, 128)
 	}
-	s.In <- DisconnectMsg{Session: sess, Reason: reason}
+	if s.stopped == nil {
+		s.In <- msg
+		return true
+	}
+	select {
+	case <-s.stopped:
+		return false
+	default:
+	}
+	select {
+	case <-s.stopped:
+		return false
+	case s.In <- msg:
+		return true
+	}
+}
+
+// waitCommandRoom blocks until the session can take another command, or the
+// actor has stopped. One producer per session keeps the cap check stable.
+func (s *Server) waitCommandRoom(sess *Session) bool {
+	for {
+		if sess.Closed() || s.isStopped() {
+			return false
+		}
+		if sess.AcceptsCommand() {
+			return true
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		if s.stopped == nil {
+			<-timer.C
+			continue
+		}
+		select {
+		case <-s.stopped:
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
 }
 
 func (s *Server) SpawnPlayerSession(name, raceID, roleID string) (*Session, *world.Entity) {
 	pl := pack.SpawnPlayer(s.World, s.Pack, name, raceID, roleID)
+	id := name
+	if id == "" || (s.Sessions != nil && s.Sessions[id] != nil) {
+		id = string(pl.ID)
+	}
 	sess := &Session{
-		ID:       name,
+		ID:       id,
 		Mode:     protocol.ModePlay,
 		PlayerID: pl.ID,
 		Out:      make(chan protocol.Event, 128),
@@ -427,6 +562,30 @@ func (s *Server) SpawnPlayerSession(name, raceID, roleID string) (*Session, *wor
 	}
 	s.AttachSession(sess)
 	return sess, pl
+}
+
+// bindConnectedPlayer spawns a remote player onto an existing session shell.
+// The actor calls it so the world and the session map stay single-threaded.
+func (s *Server) bindConnectedPlayer(sess *Session, name, race, role string) {
+	if name == "" {
+		name = "you"
+	}
+	pl := pack.SpawnPlayer(s.World, s.Pack, name, race, role)
+	id := name
+	if s.Sessions != nil && s.Sessions[id] != nil {
+		id = string(pl.ID)
+	}
+	sess.ID = id
+	if sess.Mode == "" {
+		sess.Mode = protocol.ModePlay
+	}
+	sess.PlayerID = pl.ID
+	if sess.Out == nil {
+		sess.Out = make(chan protocol.Event, 128)
+	}
+	if sess.In == nil {
+		sess.In = make(chan string, 32)
+	}
 }
 
 func (s *Server) sendTo(player *world.Entity, ev protocol.Event) {
@@ -529,19 +688,68 @@ func Launch(opt Options) (*Server, *Session, error) {
 	if sess.Mode == "" {
 		sess.Mode = protocol.ModePlay
 	}
+	srv := newServerInstance(p, w, seed)
+	srv.Session = sess
+	srv.Sessions[sess.ID] = sess
+	srv.monitorSessionIn(sess)
+	// Douse after the local session is attached so the flame line is not dropped.
+	if srv.Env != nil && srv.Env.Extinguishes(true) {
+		srv.douseOutdoorFlames()
+	}
+	return srv, sess, nil
+}
+
+func LaunchServer(opt Options) (*Server, error) {
+	if opt.Mode == protocol.ModeBuild {
+		return nil, fmt.Errorf("build mode is not permitted in server mode")
+	}
+	p, err := pack.Load(opt.PackDir)
+	if err != nil {
+		return nil, err
+	}
+	if opt.TickMS > 0 {
+		p.Meta.TickMS = opt.TickMS
+	}
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+	var w *world.World
+	if opt.Slot != "" {
+		w, err = save.Read(p.Meta.ID, opt.Slot)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		w, err = p.Instantiate()
+		if err != nil {
+			return nil, err
+		}
+	}
+	seed := opt.Seed
+	if seed == 0 {
+		seed = time.Now().UnixNano()
+	}
+	srv := newServerInstance(p, w, seed)
+	// No player yet. Lights still go out; there is nobody to tell.
+	if srv.Env != nil && srv.Env.Extinguishes(true) {
+		srv.douseOutdoorFlames()
+	}
+	return srv, nil
+}
+
+func newServerInstance(p *pack.Pack, w *world.World, seed int64) *Server {
 	h := script.New(p.Scripts)
 	h.World = w
 	srv := &Server{
 		Pack:     p,
 		World:    w,
 		Scripts:  h,
-		Session:  sess,
-		Sessions: map[string]*Session{sess.ID: sess},
+		Sessions: make(map[string]*Session),
 		In:       make(chan ServerMsg, 128),
+		stopped:  make(chan struct{}),
 		Env:      weather.New(p.Meta.TickMS, p.Time, p.Weather),
 		rng:      rand.New(rand.NewSource(seed)),
 	}
-	srv.monitorSessionIn(sess)
 	if w.WeatherState != "" {
 		srv.Env.CurrentWeather = w.WeatherState
 	}
@@ -588,9 +796,6 @@ func Launch(opt Options) (*Server, *Session, error) {
 		},
 	}
 	srv.Combat.HitMod = srv.outdoorHitPenalty
-	if srv.Env.Extinguishes(true) {
-		srv.douseOutdoorFlames()
-	}
 	h.Echo = func(actor *world.Entity, text string) {
 		if actor != nil {
 			srv.sendTo(actor, protocol.TextEvent{Channel: protocol.ChanNarrative, Text: text})
@@ -603,7 +808,7 @@ func Launch(opt Options) (*Server, *Session, error) {
 		srv.Combat.Damage(w, att, def, amount, "strike")
 	}
 	h.Move = srv.moveEntity
-	return srv, sess, nil
+	return srv
 }
 
 func (s *Server) moveEntity(ent, dest *world.Entity) error {
@@ -655,12 +860,8 @@ func endFight(w *world.World, e *world.Entity) {
 }
 
 func (s *Server) Run(ctx context.Context) {
-	if s.In == nil {
-		s.In = make(chan ServerMsg, 128)
-	}
-	if s.Sessions == nil {
-		s.Sessions = make(map[string]*Session)
-	}
+	s.ensureRuntime()
+	defer s.markStopped()
 	if s.Session != nil && s.Sessions[s.Session.ID] == nil {
 		s.Sessions[s.Session.ID] = s.Session
 	}
@@ -684,6 +885,7 @@ func (s *Server) Run(ctx context.Context) {
 		}
 		select {
 		case <-ctx.Done():
+			s.markStopped()
 			s.shutdownSessions("shutdown")
 			return
 		case <-ticker.C:
@@ -700,10 +902,20 @@ func (s *Server) Run(ctx context.Context) {
 func (s *Server) handleServerMsg(msg ServerMsg) {
 	switch m := msg.(type) {
 	case ConnectMsg:
-		if m.Session != nil {
-			s.AttachSession(m.Session)
-			s.greet(m.Session)
-			s.pushUI(m.Session)
+		if m.Session == nil {
+			break
+		}
+		if m.Session.PlayerID == "" {
+			s.bindConnectedPlayer(m.Session, m.Name, m.Race, m.Role)
+		}
+		s.AttachSession(m.Session)
+		s.greet(m.Session)
+		s.pushUI(m.Session)
+		if m.Command != "" {
+			m.Session.trackCommand()
+			if !m.Session.EnqueueCommand(m.Command) {
+				m.Session.finishCommand()
+			}
 		}
 	case DisconnectMsg:
 		if m.Session != nil {

@@ -33,41 +33,44 @@ type Event interface {
 }
 
 type TextEvent struct {
-	Channel Channel
-	Text    string
+	Channel Channel `json:"channel"`
+	Text    string  `json:"text"`
 }
 
 type PromptEvent struct {
-	Text   string // plain fallback: "Foyer Grit:24/24 > "
-	Room   string
-	Status string // "Grit:24/24"
-	Build  bool
+	Text   string `json:"text"` // plain fallback: "Foyer Grit:24/24 > "
+	Room   string `json:"room,omitempty"`
+	Status string `json:"status,omitempty"`
+	Build  bool   `json:"build,omitempty"`
 }
 
 type RoomEvent struct {
-	ID          string
-	Title       string
-	Description string
-	Exits       []ExitInfo
-	Occupants   []string
-	Items       []string
-	X, Y, Z     int
-	HasCoords   bool
-	Dark        bool
+	ID          string     `json:"id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	Exits       []ExitInfo `json:"exits,omitempty"`
+	Occupants   []string   `json:"occupants,omitempty"`
+	Items       []string   `json:"items,omitempty"`
+	X           int        `json:"x"`
+	Y           int        `json:"y"`
+	Z           int        `json:"z"`
+	HasCoords   bool       `json:"has_coords,omitempty"`
+	Dark        bool       `json:"dark,omitempty"`
 }
 
 type ExitInfo struct {
-	Dir    string
-	Closed bool
-	Locked bool
+	Dir    string `json:"dir"`
+	Closed bool   `json:"closed,omitempty"`
+	Locked bool   `json:"locked,omitempty"`
 }
 
 type ResourceView struct {
-	Key          string
-	Label        string
-	Current, Max int
-	Pile         bool   // not a capped pool; show the amount alone
-	Show         string // bar, side, or sheet
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Current int    `json:"current"`
+	Max     int    `json:"max"`
+	Pile    bool   `json:"pile,omitempty"` // not a capped pool; show the amount alone
+	Show    string `json:"show,omitempty"` // bar, side, or sheet
 }
 
 // Text is one resource for a pane. A bar is a meter. A pile is an amount.
@@ -100,60 +103,63 @@ func Meter(current, max, width int) string {
 }
 
 type VitalsEvent struct {
-	Resources []ResourceView
-	Flags     []string
-	InCombat  bool
-	Round     int64
+	Resources []ResourceView `json:"resources,omitempty"`
+	Flags     []string       `json:"flags,omitempty"`
+	InCombat  bool           `json:"in_combat,omitempty"`
+	Round     int64          `json:"round,omitempty"`
 }
 
 type EquipView struct {
-	Slot string
-	Item string
+	Slot string `json:"slot"`
+	Item string `json:"item"`
 }
 
 type InventoryEvent struct {
-	Items     []string
-	Equipment []EquipView
+	Items     []string    `json:"items,omitempty"`
+	Equipment []EquipView `json:"equipment,omitempty"`
 }
 
 type MapRoom struct {
-	X, Y  int
-	Name  string
-	Here  bool
-	Exits []string
+	X     int      `json:"x"`
+	Y     int      `json:"y"`
+	Name  string   `json:"name"`
+	Here  bool     `json:"here,omitempty"`
+	Exits []string `json:"exits,omitempty"`
 }
 
 type MapEvent struct {
-	Rooms            []MapRoom
-	PlayerX, PlayerY int
-	Text             string
+	Rooms   []MapRoom `json:"rooms,omitempty"`
+	PlayerX int       `json:"player_x"`
+	PlayerY int       `json:"player_y"`
+	Text    string    `json:"text,omitempty"`
 }
 
 type FighterView struct {
-	Name     string
-	HP, Max  int
-	IsPlayer bool
+	Name     string `json:"name"`
+	HP       int    `json:"hp"`
+	Max      int    `json:"max"`
+	IsPlayer bool   `json:"is_player,omitempty"`
 }
 
 type CombatEvent struct {
-	Active   bool
-	Fighters []FighterView
+	Active   bool          `json:"active"`
+	Fighters []FighterView `json:"fighters,omitempty"`
 }
 
 type LayoutEvent struct {
-	Panes []string
+	Panes []string `json:"panes"`
 }
 
 type ModeEvent struct {
-	Mode Mode
+	Mode Mode `json:"mode"`
 }
 
 type TitleEvent struct {
-	Title string
+	Title string `json:"title"`
 }
 
 type DisconnectEvent struct {
-	Reason string
+	Reason string `json:"reason"`
 }
 
 func (TextEvent) isEvent()       {}

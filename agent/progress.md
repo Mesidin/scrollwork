@@ -385,12 +385,48 @@ This document records the chronological development history, verified features, 
     * `TestStage2PartyChat`: verifies party communication across rooms, `gt` alias, echo, isolation from non-party members, and non-party refusal.
     * `TestStage2KillPlayerRefusal`: verifies calm refusal when attempting `kill <player>` and confirms neither player enters combat.
   * All tests pass: `go test -count=1 ./...` including Old House playthrough (`TestOldHousePlaythrough`).
-* **Review fixes (Oct 21, 2026)**:
-  * `tell` reaches one connected player. A duplicate name, a disconnected character, or your own id does not echo success.
-  * Party chat is delivered only to members who still have a session. `gt` is chat, so `gt leave` does not leave the party.
-  * A queued `quit` runs before the stall check. The input pump stops when the session disconnects.
-  * Integration tests keep the pack tick and wait until the submitted command has finished.
-  * `go test ./...` passed on Oct 21, 2026.
+## Milestone 17: Multiplayer Stage 3 — Framed Protocol (`serve` & `connect`) (Oct 23, 2026)
+* **Protocol JSON Struct Tags (`internal/protocol/protocol.go`)**:
+  * Added `json:"..."` struct tags across all 11 `protocol.Event` structures and subviews (`TextEvent`, `PromptEvent`, `RoomEvent`, `ExitInfo`, `ResourceView`, `VitalsEvent`, `EquipView`, `InventoryEvent`, `MapRoom`, `MapEvent`, `FighterView`, `CombatEvent`, `LayoutEvent`, `ModeEvent`, `TitleEvent`, `DisconnectEvent`).
+  * In-process channels continue to pass native Go structs without overhead, while remote network sessions serialize and deserialize cleanly.
+* **Length-Prefixed Framed Transport & Codec (`internal/net/frame.go`)**:
+  * Implemented binary framing with a 4-byte big-endian `uint32` length prefix (`WriteFrame`, `ReadFrame`). A frame may be at most 256KB. The length is rejected before the body is allocated, and the body read has a deadline so a stalled peer cannot sit on that buffer. An idle connection is not timed out while it is waiting for the next length prefix.
+  * Preserves newlines safely inside room descriptions, dialogue, and art banners without line-splitting ambiguity.
+  * Event encoder and decoder (`EncodeEvent`, `DecodeEvent`) wraps each event in a typed envelope with `"t"`:
+    `{"t":"text", ...}`, `{"t":"prompt", ...}`, `{"t":"room", ...}`, `{"t":"vitals", ...}`, `{"t":"inventory", ...}`, `{"t":"map", ...}`, `{"t":"combat", ...}`, `{"t":"layout", ...}`, `{"t":"mode", ...}`, `{"t":"title", ...}`, `{"t":"disconnect", ...}`.
+  * Client frame codec (`EncodeCommand`, `EncodeConnect`, `EncodeDisconnect`, `DecodeClientFrame`) supports command lines, connect handshakes with character metadata, and disconnect notifications.
+* **Server-Side Networking & Dedicated Server Mode (`internal/net/server.go`, `internal/server/server.go`)**:
+  * Added `server.LaunchServer(Options)` for starting headless multiplayer servers without an initial local player session. Extracted shared server subsystem wiring into `newServerInstance`.
+  * `LaunchServer` rejects build mode (`protocol.ModeBuild`) and validates the pack before instantiating the world.
+  * `SpawnPlayerSession` still builds a session for in-process tests. A framed connection does not call it. `ConnectMsg` carries the name, race, role, and optional first command. The actor spawns the entity, picks a free session id, and attaches the session before greet. Two connects with the same name no longer share one map slot.
+  * Implemented `NormalizeAddr` and `Listen` enforcing loopback-only binding (`127.0.0.1:<port>`) and refusing public or wildcard hostnames.
+  * `Serve` and `ServeConn` manage connection lifecycles. The connection goroutine only enqueues. One accept error is logged and the listener stays up. The outbound loop flushes the side queue, so a full `Out` still delivers `DisconnectEvent`. Cancelling the serve context closes the socket. Sends onto `Server.In` return once `Run` has stopped.
+  * `sudengine serve` returns the listen error. `--port` must be in `1..65535` and must have a value. The "Serving" line is printed after the bind succeeds.
+  * Remote command queues stop at 32, the same cap as the local input buffer.
+  * Startup extinguish runs after the local session is attached, so the flame line is delivered. A headless `LaunchServer` still puts the lights out with nobody to tell.
+  * `Dial` closes its wake channel once, so client cleanup and the reader can both run.
+* **Remote Client & Bubble Tea Integration (`internal/net/client.go`, `internal/client/client.go`)**:
+  * Implemented `net.Dial(ctx, addr, name, race, role)` connecting to remote servers, sending initial connect handshake frame, and returning a connected `server.Session`.
+  * Added `client.ConnectPlay(sess, cancel)`: boots the Bubble Tea TUI in `stateGame` using the remote session.
+  * Remote client renders the exact same UI panes (output log, side status, room description, exits, vitals, inventory, map, combat) as local `play`.
+* **CLI Subcommands (`cmd/sudengine/main.go`)**:
+  * `sudengine serve <pack> [--port 4000]`: loads, validates, and serves pack on `127.0.0.1:4000` (or custom `--port`). Rejects build mode.
+  * `sudengine connect <host:port> [--name <name>] [--race <race>] [--role <role>]`: launches Bubble Tea client connecting over framed protocol.
+  * Updated engine help documentation.
+* **Verification & Test Suite**:
+  * `internal/protocol/protocol_test.go`: verified JSON serialization/deserialization round-tripping.
+  * `internal/net/frame_test.go`: verified length-prefix framing, multi-frame streaming with newlines, event encoding/decoding across all 11 types, client frame codec, and exact spec JSON envelope structure (`{"t":"text","channel":"say","text":"..."}`).
+  * `internal/net/server_test.go`:
+    * `TestListenerAcceptsFramedConnectionAndCommand`: accepts framed connection on ephemeral port, emits `RoomEvent`, and reads command frame back onto actor loop.
+    * `TestConnectShowsSameRoomAsPlay`: verifies remote `connect` to localhost receives the exact same room ID, title, and description as local `play`.
+    * `TestServeRejectsBuildMode`: verifies `serve` refuses build mode.
+    * `TestMultipleFramedConnections`: verifies multiple concurrent TCP clients can interact in real-time (`say`, `tell`).
+  * `cmd/sudengine/main_test.go`: verifies CLI argument validation and build rejection.
+  * All tests pass: `go test -count=1 ./...` including Old House playthrough (`TestOldHousePlaythrough`).
+* **Review fixes (Oct 26, 2026)**:
+  * Tests cover an oversize frame, a stalled body, an accept error, an unknown handshake, two players with the same name, idempotent `Dial` cleanup, a disconnect flushed from a full `Out`, the command cap, enqueue unblocking after shutdown, startup flame delivery, a bad `--port`, and a failed bind.
+  * `go test -count=1 ./internal/server ./internal/commands ./internal/pack ./internal/client ./internal/net ./cmd/sudengine` passed. The race detector was not run: this machine has no gcc, and `-race` needs cgo.
+
 
 
 

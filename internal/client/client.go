@@ -729,3 +729,39 @@ func DirectPlay(gamesDir, packID string, mode protocol.Mode) (Model, error) {
 	nm, _ := m.openIntro(info, mode)
 	return nm.(Model), nil
 }
+
+// ConnectPlay creates a client Model ready to play over an established remote session.
+func ConnectPlay(sess *server.Session, cancel context.CancelFunc) Model {
+	ti := textinput.New()
+	ti.Prompt = "> "
+	ti.Placeholder = "look, n, get lamp..."
+	ti.CharLimit = 240
+	ti.Focus()
+
+	log := viewport.New()
+	log.SoftWrap = true
+	log.MouseWheelEnabled = true
+	side := viewport.New()
+	side.SoftWrap = true
+
+	m := Model{
+		state:     stateGame,
+		input:     ti,
+		log:       log,
+		side:      side,
+		layout:    []string{"output", "map", "vitals"},
+		prompt:    "> ",
+		title:     "Erickson Stories",
+		theme:     theme.Load(),
+		helpTopic: -1,
+		sess:      sess,
+		cancel:    cancel,
+	}
+	m.layoutPanes()
+	return m
+}
+
+// CurrentRoom returns the room most recently received by the client model.
+func (m Model) CurrentRoom() protocol.RoomEvent {
+	return m.room
+}
