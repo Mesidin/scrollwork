@@ -29,6 +29,8 @@ type capture struct {
 
 type Session struct {
 	ID           string
+	Account      string
+	Persist      bool
 	Mode         protocol.Mode
 	PlayerID     world.ID
 	Out          chan protocol.Event
@@ -288,9 +290,12 @@ func (CommandMsg) isServerMsg() {}
 
 type ConnectMsg struct {
 	Session *Session
+	Account string
+	Persist bool
 	Name    string
 	Race    string
 	Role    string
+	Attrs   map[string]int
 	Command string
 }
 
@@ -304,18 +309,24 @@ type DisconnectMsg struct {
 func (DisconnectMsg) isServerMsg() {}
 
 type Server struct {
-	Pack      *pack.Pack
-	World     *world.World
-	Scripts   *script.Host
-	Combat    *combat.Engine
-	Session   *Session
-	Sessions  map[string]*Session
-	In        chan ServerMsg
-	Env       *weather.Environment
-	rng       *rand.Rand
-	localQuit bool
-	stopped   chan struct{}
-	stopOnce  sync.Once
+	Pack          *pack.Pack
+	World         *world.World
+	Scripts       *script.Host
+	Combat        *combat.Engine
+	Session       *Session
+	Sessions      map[string]*Session
+	In            chan ServerMsg
+	Env           *weather.Environment
+	rng           *rand.Rand
+	localQuit     bool
+	stopped       chan struct{}
+	stopOnce      sync.Once
+	Multiplayer   bool
+	Persist       bool
+	GraceTicks    int
+	AutosaveTicks int
+	Linkdead      map[world.ID]int64
+	owners        map[world.ID]string
 }
 
 func (s *Server) sessionFor(player *world.Entity) *Session {
@@ -439,11 +450,20 @@ func (s *Server) EnqueueConnect(sess *Session, name, race, role, command string)
 	}
 	return s.enqueueMsg(ConnectMsg{
 		Session: sess,
+		Account: sess.Account,
+		Persist: sess.Persist,
 		Name:    name,
 		Race:    race,
 		Role:    role,
 		Command: command,
 	})
+}
+
+func (s *Server) EnqueueConnectChar(msg ConnectMsg) bool {
+	if s == nil || msg.Session == nil {
+		return false
+	}
+	return s.enqueueMsg(msg)
 }
 
 func (s *Server) EnqueueDisconnect(sess *Session, reason string) bool {
@@ -472,6 +492,9 @@ func (s *Server) ensureRuntime() {
 	}
 	if s.Sessions == nil {
 		s.Sessions = make(map[string]*Session)
+	}
+	if s.Linkdead == nil {
+		s.Linkdead = make(map[world.ID]int64)
 	}
 }
 
@@ -564,18 +587,112 @@ func (s *Server) SpawnPlayerSession(name, raceID, roleID string) (*Session, *wor
 	return sess, pl
 }
 
-// bindConnectedPlayer spawns a remote player onto an existing session shell.
+// bindConnectedPlayer spawns or reconnects a remote player onto an existing session shell.
 // The actor calls it so the world and the session map stay single-threaded.
-func (s *Server) bindConnectedPlayer(sess *Session, name, race, role string) {
+func (s *Server) bindConnectedPlayer(m ConnectMsg) error {
+	sess := m.Session
+	if sess == nil {
+		return fmt.Errorf("missing session")
+	}
+	if s.World == nil || s.Pack == nil {
+		return fmt.Errorf("server is not ready")
+	}
+	name := strings.TrimSpace(m.Name)
 	if name == "" {
 		name = "you"
 	}
-	pl := pack.SpawnPlayer(s.World, s.Pack, name, race, role)
-	id := name
-	if s.Sessions != nil && s.Sessions[id] != nil {
-		id = string(pl.ID)
+	if m.Account != "" {
+		sess.Account = m.Account
 	}
-	sess.ID = id
+	if s.Persist && sess.Account == "" {
+		return fmt.Errorf("login required")
+	}
+	sess.Persist = m.Persist || sess.Account != ""
+	var pl *world.Entity
+	if sess.Persist {
+		if err := save.RecoverPaired(s.Pack.Meta.ID); err != nil {
+			return err
+		}
+		if s.Sessions != nil {
+			if existing := s.Sessions[name]; existing != nil && existing != sess && !existing.Closed() {
+				return fmt.Errorf("%s is already connected", name)
+			}
+		}
+		for _, e := range s.World.Entities {
+			if e == nil || e.Kind != world.KindPlayer || !strings.EqualFold(e.Name, name) {
+				continue
+			}
+			if live := s.sessionFor(e); live != nil && live != sess && !live.Closed() {
+				return fmt.Errorf("%s is already connected", e.Name)
+			}
+			if !s.accountOwns(e, sess.Account) {
+				return fmt.Errorf("that character belongs to another account")
+			}
+			pl = e
+			pl.SetFlag("linkdead", false)
+			if s.Linkdead != nil {
+				delete(s.Linkdead, pl.ID)
+			}
+			s.rememberOwner(pl.ID, sess.Account)
+			break
+		}
+	}
+
+	if pl == nil && sess.Persist && save.HasPlayer(s.Pack.Meta.ID, name) {
+		ps, err := save.ReadPlayer(s.Pack.Meta.ID, name)
+		if err != nil {
+			return err
+		}
+		if ps.Account == "" || !strings.EqualFold(ps.Account, sess.Account) {
+			return fmt.Errorf("that character belongs to another account")
+		}
+		attached, err := save.AttachPlayer(s.World, ps)
+		if err != nil {
+			return err
+		}
+		pl = attached
+		s.Pack.RPG.StampPiles(s.World)
+		s.rememberOwner(pl.ID, ps.Account)
+	}
+
+	if pl == nil {
+		pl = pack.SpawnPlayer(s.World, s.Pack, name, m.Race, m.Role)
+		if len(m.Attrs) > 0 {
+			if pl.Attrs == nil {
+				pl.Attrs = map[string]int{}
+			}
+			for k, v := range m.Attrs {
+				pl.Attrs[k] += v
+			}
+		}
+		if sess.Account != "" {
+			s.rememberOwner(pl.ID, sess.Account)
+		}
+		if sess.Persist {
+			if err := s.SaveWorld(); err != nil {
+				s.markLinkdead(pl)
+				sess.PlayerID = pl.ID
+				return fmt.Errorf("could not save character: %w", err)
+			}
+			if sess.Account != "" {
+				if err := save.AddCharacterToAccount(s.Pack.Meta.ID, sess.Account, pl.Name); err != nil {
+					sess.Send(protocol.TextEvent{
+						Channel: protocol.ChanSystem,
+						Text:    "Could not add character to account: " + err.Error(),
+					})
+				}
+			}
+		}
+	}
+
+	if sess.ID == "" {
+		sess.ID = name
+	}
+	if s.Sessions != nil {
+		if existing := s.Sessions[sess.ID]; existing != nil && existing != sess && !existing.Closed() {
+			sess.ID = string(pl.ID)
+		}
+	}
 	if sess.Mode == "" {
 		sess.Mode = protocol.ModePlay
 	}
@@ -586,6 +703,36 @@ func (s *Server) bindConnectedPlayer(sess *Session, name, race, role string) {
 	if sess.In == nil {
 		sess.In = make(chan string, 32)
 	}
+	return nil
+}
+
+func (s *Server) rememberOwner(id world.ID, account string) {
+	if s == nil || id == "" || account == "" {
+		return
+	}
+	if s.owners == nil {
+		s.owners = map[world.ID]string{}
+	}
+	s.owners[id] = account
+}
+
+func (s *Server) accountOwns(pl *world.Entity, account string) bool {
+	if pl == nil || account == "" {
+		return false
+	}
+	if s.owners != nil {
+		if own, ok := s.owners[pl.ID]; ok {
+			return own != "" && strings.EqualFold(own, account)
+		}
+	}
+	if s.Pack == nil {
+		return false
+	}
+	ps, err := save.ReadPlayer(s.Pack.Meta.ID, pl.Name)
+	if err != nil || ps == nil {
+		return false
+	}
+	return ps.Account != "" && strings.EqualFold(ps.Account, account)
 }
 
 func (s *Server) sendTo(player *world.Entity, ev protocol.Event) {
@@ -634,14 +781,17 @@ func (s *Server) playerInRoom(room *world.Entity) *world.Entity {
 }
 
 type Options struct {
-	PackDir    string
-	Mode       protocol.Mode
-	Slot       string // if set, load snapshot instead of fresh instantiate
-	Seed       int64
-	PlayerName string
-	RaceID     string
-	RoleID     string
-	TickMS     int
+	PackDir       string
+	Mode          protocol.Mode
+	Slot          string // if set, load snapshot instead of fresh instantiate
+	Seed          int64
+	PlayerName    string
+	RaceID        string
+	RoleID        string
+	TickMS        int
+	Persist       bool
+	GraceTicks    int
+	AutosaveTicks int
 }
 
 func Launch(opt Options) (*Server, *Session, error) {
@@ -689,6 +839,9 @@ func Launch(opt Options) (*Server, *Session, error) {
 		sess.Mode = protocol.ModePlay
 	}
 	srv := newServerInstance(p, w, seed)
+	srv.Persist = opt.Persist
+	srv.GraceTicks = opt.GraceTicks
+	srv.AutosaveTicks = opt.AutosaveTicks
 	srv.Session = sess
 	srv.Sessions[sess.ID] = sess
 	srv.monitorSessionIn(sess)
@@ -713,12 +866,23 @@ func LaunchServer(opt Options) (*Server, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
+	if opt.Persist && opt.Slot == "" {
+		if err := save.RecoverPaired(p.Meta.ID); err != nil {
+			return nil, err
+		}
+	}
 	var w *world.World
 	if opt.Slot != "" {
 		w, err = save.Read(p.Meta.ID, opt.Slot)
 		if err != nil {
 			return nil, err
 		}
+	} else if opt.Persist && save.HasWorld(p.Meta.ID) {
+		w, err = save.ReadWorld(p.Meta.ID)
+		if err != nil {
+			return nil, err
+		}
+		p.RPG.StampPiles(w)
 	} else {
 		w, err = p.Instantiate()
 		if err != nil {
@@ -730,6 +894,10 @@ func LaunchServer(opt Options) (*Server, error) {
 		seed = time.Now().UnixNano()
 	}
 	srv := newServerInstance(p, w, seed)
+	srv.Multiplayer = true
+	srv.Persist = opt.Persist
+	srv.GraceTicks = opt.GraceTicks
+	srv.AutosaveTicks = opt.AutosaveTicks
 	// No player yet. Lights still go out; there is nobody to tell.
 	if srv.Env != nil && srv.Env.Extinguishes(true) {
 		srv.douseOutdoorFlames()
@@ -745,6 +913,8 @@ func newServerInstance(p *pack.Pack, w *world.World, seed int64) *Server {
 		World:    w,
 		Scripts:  h,
 		Sessions: make(map[string]*Session),
+		Linkdead: make(map[world.ID]int64),
+		owners:   make(map[world.ID]string),
 		In:       make(chan ServerMsg, 128),
 		stopped:  make(chan struct{}),
 		Env:      weather.New(p.Meta.TickMS, p.Time, p.Weather),
@@ -886,7 +1056,10 @@ func (s *Server) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			s.markStopped()
-			s.shutdownSessions("shutdown")
+			if s.Persist {
+				_ = s.SaveWorld()
+			}
+			s.shutdownSessions()
 			return
 		case <-ticker.C:
 			s.tick()
@@ -906,11 +1079,20 @@ func (s *Server) handleServerMsg(msg ServerMsg) {
 			break
 		}
 		if m.Session.PlayerID == "" {
-			s.bindConnectedPlayer(m.Session, m.Name, m.Race, m.Role)
+			if err := s.bindConnectedPlayer(m); err != nil {
+				m.Session.Send(protocol.TextEvent{Channel: protocol.ChanSystem, Text: err.Error()})
+				m.Session.Disconnect("denied")
+				break
+			}
 		}
 		s.AttachSession(m.Session)
 		s.greet(m.Session)
 		s.pushUI(m.Session)
+		if pl := s.World.Get(m.Session.PlayerID); pl != nil {
+			if room := s.World.RoomOf(pl); room != nil {
+				s.pushRoomIn(room)
+			}
+		}
 		if m.Command != "" {
 			m.Session.trackCommand()
 			if !m.Session.EnqueueCommand(m.Command) {
@@ -947,25 +1129,163 @@ func (s *Server) reapQuits() bool {
 	return s.localQuit
 }
 
-func (s *Server) shutdownSessions(reason string) {
+func (s *Server) shutdownSessions() {
 	for _, sess := range append([]*Session{}, s.allSessions()...) {
-		s.disconnect(sess, reason)
+		s.dropSession(sess, "shutdown")
 	}
 }
 
-func (s *Server) disconnect(sess *Session, reason string) {
+func (s *Server) dropSession(sess *Session, reason string) bool {
 	if s == nil || sess == nil {
-		return
+		return false
 	}
 	if s.Sessions != nil {
 		delete(s.Sessions, sess.ID)
 	}
-	if s.Session == sess {
+	isLocal := s.Session == sess
+	if isLocal {
 		s.localQuit = true
 	}
 	sess.quit = false
 	sess.Disconnect(reason)
 	sess.stopInput()
+	return isLocal
+}
+
+func (s *Server) graceTicks() int {
+	if s != nil && s.GraceTicks > 0 {
+		return s.GraceTicks
+	}
+	tickMS := 250
+	if s != nil && s.Pack != nil && s.Pack.Meta.TickMS > 0 {
+		tickMS = s.Pack.Meta.TickMS
+	}
+	// Default grace is 60 seconds.
+	n := 60000 / tickMS
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+func (s *Server) autosaveEvery() int {
+	if s != nil && s.AutosaveTicks > 0 {
+		return s.AutosaveTicks
+	}
+	return s.graceTicks()
+}
+
+// SaveWorld writes every live player and world.json, including each owner's account.
+func (s *Server) SaveWorld(players ...*world.Entity) error {
+	if s == nil || s.Pack == nil || s.World == nil {
+		return nil
+	}
+	return save.WritePairedOwned(s.Pack.Meta.ID, s.World, s.owners, players...)
+}
+
+func (s *Server) markLinkdead(pl *world.Entity) {
+	if s == nil || pl == nil {
+		return
+	}
+	if s.Linkdead == nil {
+		s.Linkdead = make(map[world.ID]int64)
+	}
+	pl.SetFlag("linkdead", true)
+	s.Linkdead[pl.ID] = s.World.Tick + int64(s.graceTicks())
+	if room := s.World.RoomOf(pl); room != nil {
+		s.pushRoomIn(room)
+	}
+}
+
+func (s *Server) reapLinkdead() {
+	if s == nil || s.World == nil || len(s.Linkdead) == 0 {
+		return
+	}
+	now := s.World.Tick
+	var expired []world.ID
+	for pid, due := range s.Linkdead {
+		if now >= due {
+			expired = append(expired, pid)
+		}
+	}
+	sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
+	for _, pid := range expired {
+		pl := s.World.Get(pid)
+		if pl == nil {
+			delete(s.Linkdead, pid)
+			continue
+		}
+		if s.sessionFor(pl) != nil {
+			pl.SetFlag("linkdead", false)
+			delete(s.Linkdead, pid)
+			continue
+		}
+		if s.Persist {
+			if err := s.SaveWorld(); err != nil {
+				s.tellSessions(fmt.Sprintf("Could not save %s: %s", pl.Name, err.Error()))
+				continue
+			}
+		}
+		delete(s.Linkdead, pid)
+		pl.SetFlag("linkdead", false)
+		s.removePlayer(pl)
+	}
+}
+
+func (s *Server) disconnect(sess *Session, reason string) {
+	if s == nil || sess == nil || s.World == nil {
+		return
+	}
+	isLocal := s.dropSession(sess, reason)
+	pl := s.World.Get(sess.PlayerID)
+	if pl == nil {
+		return
+	}
+	if reason != "quit" || pl.InCombat() {
+		if sess.Persist {
+			s.Persist = true
+		}
+		s.markLinkdead(pl)
+		return
+	}
+	if isLocal {
+		return
+	}
+	if s.Persist || sess.Persist {
+		if err := s.SaveWorld(); err != nil {
+			s.markLinkdead(pl)
+			s.tellSessions(fmt.Sprintf("Could not save %s: %s", pl.Name, err.Error()))
+			return
+		}
+	}
+	s.removePlayer(pl)
+}
+
+func (s *Server) removePlayer(pl *world.Entity) {
+	if s == nil || s.World == nil || pl == nil {
+		return
+	}
+	endFight(s.World, pl)
+	room := s.World.RoomOf(pl)
+	save.RemovePlayerSubgraph(s.World, pl.ID)
+	if s.owners != nil {
+		delete(s.owners, pl.ID)
+	}
+	if room != nil {
+		s.pushRoomIn(room)
+	}
+}
+
+func (s *Server) tellSessions(text string) {
+	if s == nil || text == "" {
+		return
+	}
+	ev := protocol.TextEvent{Channel: protocol.ChanSystem, Text: text}
+	for _, sess := range s.allSessions() {
+		if sess != nil {
+			sess.Send(ev)
+		}
+	}
 }
 
 func (s *Server) greet(sessions ...*Session) {
@@ -1064,6 +1384,12 @@ func (s *Server) ctx(session ...*Session) *commands.Context {
 		},
 		Quit: func() { sess.quit = true },
 		SaveSnap: func(slot string) error {
+			if s.Persist || sess.Persist {
+				if slot == "autosave" && actor != nil && actor.InCombat() {
+					return nil
+				}
+				return s.SaveWorld()
+			}
 			return save.Write(s.Pack.Meta.ID, slot, s.World)
 		},
 		LoadSnap: func(slot string) error {
@@ -1226,7 +1552,14 @@ func (s *Server) tick() {
 		s.Combat.Tick(s.World, now)
 	}
 	s.reapDead()
+	s.reapLinkdead()
 	s.processRespawns()
+	if s.Persist {
+		every := s.autosaveEvery()
+		if every > 0 && now%int64(every) == 0 {
+			_ = s.SaveWorld()
+		}
+	}
 	// only push vitals/combat on tick to avoid flooding the log
 	s.pushVitals()
 	s.pushCombat()
@@ -1696,6 +2029,38 @@ func (s *Server) playerSharingParty(partyID world.ID) *world.Entity {
 	return fallback
 }
 
+func (s *Server) killRecipients(killer, room *world.Entity, credit map[world.ID]allyCredit) []*world.Entity {
+	if killer == nil {
+		return nil
+	}
+	partyID := killer.PartyLeader
+	if partyID == "" {
+		partyID = credit[killer.ID].party
+	}
+	if partyID == "" {
+		return []*world.Entity{killer}
+	}
+	var out []*world.Entity
+	for _, e := range s.World.Entities {
+		if e == nil || e.Kind != world.KindPlayer {
+			continue
+		}
+		pLeader := e.PartyLeader
+		if pLeader == "" {
+			pLeader = credit[e.ID].party
+		}
+		if pLeader != partyID {
+			continue
+		}
+		if room != nil && s.World.RoomOf(e) != room {
+			continue
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 func (s *Server) reapDead() {
 	primary := s.Pack.RPG.Primary()
 	credit := map[world.ID]allyCredit{}
@@ -1735,26 +2100,31 @@ func (s *Server) reapDead() {
 		}
 		_, _ = s.Scripts.Call("on_death", killer, e)
 		isPlayerKill := killer != nil && !unattributed
+		recipients := s.killRecipients(killer, room, credit)
 		if isPlayerKill && s.Pack != nil && len(s.Pack.Quests) > 0 {
-			notices := quest.UpdateKill(killer, e, s.Pack.Quests, s.World)
-			for _, n := range notices {
-				s.sendTo(killer, protocol.TextEvent{Channel: protocol.ChanAlert, Text: n.String()})
+			for _, rec := range recipients {
+				notices := quest.UpdateKill(rec, e, s.Pack.Quests, s.World)
+				for _, n := range notices {
+					s.sendTo(rec, protocol.TextEvent{Channel: protocol.ChanAlert, Text: n.String()})
+				}
 			}
 		}
-		if killer != nil && (isPlayerKill || unattributed) && e.XP > 0 && s.Pack.RPG.Advancement.On() {
-			s.sendTo(killer, protocol.TextEvent{
-				Channel: protocol.ChanNarrative,
-				Text:    fmt.Sprintf("You gain %d experience.", e.XP),
-			})
-			msgs := s.Pack.RPG.Grant(killer, e.XP)
-			for _, msg := range msgs {
-				s.sendTo(killer, protocol.TextEvent{Channel: protocol.ChanAlert, Text: msg})
-			}
-			if len(msgs) > 0 {
-				s.sendTo(killer, protocol.TextEvent{
-					Channel: protocol.ChanSystem,
-					Text:    "improve <skill> spends a skill point. raise <attribute> spends an attribute point. train <skill> pays a trainer.",
+		if (isPlayerKill || unattributed) && e.XP > 0 && s.Pack.RPG.Advancement.On() {
+			for _, rec := range recipients {
+				s.sendTo(rec, protocol.TextEvent{
+					Channel: protocol.ChanNarrative,
+					Text:    fmt.Sprintf("You gain %d experience.", e.XP),
 				})
+				msgs := s.Pack.RPG.Grant(rec, e.XP)
+				for _, msg := range msgs {
+					s.sendTo(rec, protocol.TextEvent{Channel: protocol.ChanAlert, Text: msg})
+				}
+				if len(msgs) > 0 {
+					s.sendTo(rec, protocol.TextEvent{
+						Channel: protocol.ChanSystem,
+						Text:    "improve <skill> spends a skill point. raise <attribute> spends an attribute point. train <skill> pays a trainer.",
+					})
+				}
 			}
 		}
 		if room != nil {

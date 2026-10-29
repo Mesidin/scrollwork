@@ -65,8 +65,20 @@ type Ability struct {
 }
 
 type Chargen struct {
-	Enabled bool `yaml:"enabled"`
-	AskName bool `yaml:"ask_name"`
+	Enabled  bool `yaml:"enabled"`
+	AskName  bool `yaml:"ask_name"`
+	PointBuy int  `yaml:"point_buy"`
+	Points   int  `yaml:"points"`
+}
+
+func (c Chargen) Budget() int {
+	if c.PointBuy > 0 {
+		return c.PointBuy
+	}
+	if c.Points > 0 {
+		return c.Points
+	}
+	return 0
 }
 
 type Schema struct {

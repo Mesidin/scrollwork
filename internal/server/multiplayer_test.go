@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"sudengine/internal/protocol"
+	"sudengine/internal/quest"
+	"sudengine/internal/save"
 	"sudengine/internal/server"
 	"sudengine/internal/world"
 )
@@ -40,6 +42,15 @@ func filterRoomEvents(evs []protocol.Event) []protocol.RoomEvent {
 		}
 	}
 	return out
+}
+
+func findLastRoomEvent(evs []protocol.Event) *protocol.RoomEvent {
+	rooms := filterRoomEvents(evs)
+	if len(rooms) == 0 {
+		return nil
+	}
+	last := rooms[len(rooms)-1]
+	return &last
 }
 
 func TestStage1Multiplayer(t *testing.T) {
@@ -680,3 +691,274 @@ func TestStage2KillPlayerRefusal(t *testing.T) {
 		t.Fatalf("neither player should be in combat: Ada=%v, Bob=%v", entAda.InCombat(), entBob.InCombat())
 	}
 }
+
+// Stage 5 Done Check 4: A link-dead character is still in the room on the next tick, and is gone after the grace period.
+func TestStage5LinkDeadStaysInRoomNextTickAndDespawnsAfterGrace(t *testing.T) {
+	origRoot := save.Root
+	save.Root = t.TempDir()
+	defer func() { save.Root = origRoot }()
+
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, ada, err := server.Launch(server.Options{
+		PackDir:    dir,
+		Mode:       protocol.ModePlay,
+		Seed:       1,
+		PlayerName: "Ada",
+		Persist:    true,
+		GraceTicks: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, entBob := srv.SpawnPlayerSession("Bob", "", "")
+	bob.Persist = true
+	bobID := entBob.ID
+
+	// Simulate Bob's socket dropping (stalled after two full ticks).
+	for i := 0; i < cap(bob.Out); i++ {
+		bob.Send(protocol.TextEvent{Channel: protocol.ChanNarrative, Text: "pad"})
+	}
+	srv.Tick() // stalledTicks = 1
+	srv.Tick() // stalledTicks = 2 -> Bob disconnected as stalled and marked linkdead (due at tick + 3)
+
+	if !bob.Closed() {
+		t.Fatalf("expected Bob's session to be closed")
+	}
+
+	// Next tick: Bob is STILL in the room and flagged linkdead.
+	drainEvents(ada)
+	srv.Tick() // 1 tick into 3-tick grace period
+	if srv.World.Get(bobID) == nil {
+		t.Fatalf("expected link-dead Bob to still be in the world on the next tick")
+	}
+	if !srv.World.Get(bobID).HasFlag("linkdead") {
+		t.Fatalf("expected link-dead Bob to have linkdead flag set")
+	}
+	adaLook := srv.HandleSessionLine(ada, "look")
+	roomEv := findLastRoomEvent(adaLook)
+	if roomEv == nil {
+		t.Fatalf("expected RoomEvent for Ada")
+	}
+	foundLinkdeadBob := false
+	for _, occ := range roomEv.Occupants {
+		if occ == "Bob (linkdead)" {
+			foundLinkdeadBob = true
+		}
+	}
+	if !foundLinkdeadBob {
+		t.Fatalf("expected Ada to see 'Bob (linkdead)' in room occupants, got %v", roomEv.Occupants)
+	}
+
+	// Advance remaining grace ticks (2 more ticks to reach dueTick).
+	srv.Tick()
+	srv.Tick()
+
+	// After the grace period: Bob is saved to disk and despawned from the world and room.
+	if srv.World.Get(bobID) != nil {
+		t.Fatalf("expected Bob to be despawned after grace period expired")
+	}
+	if !save.HasPlayer(srv.Pack.Meta.ID, "Bob") {
+		t.Fatalf("expected Bob to be saved to players/bob.json when grace period expired")
+	}
+	adaLookAfter := srv.HandleSessionLine(ada, "look")
+	roomEvAfter := findLastRoomEvent(adaLookAfter)
+	for _, occ := range roomEvAfter.Occupants {
+		if strings.Contains(occ, "Bob") {
+			t.Fatalf("expected Bob to be gone from room occupants after grace period, got %v", roomEvAfter.Occupants)
+		}
+	}
+}
+
+func TestStage5CombatQuitSharesGraceAndDeathRecallsBeforeSave(t *testing.T) {
+	origRoot := save.Root
+	save.Root = t.TempDir()
+	defer func() { save.Root = origRoot }()
+
+	dir := filepath.Join("..", "..", "games", "green-hollow")
+	srv, ada, err := server.Launch(server.Options{
+		PackDir:    dir,
+		Mode:       protocol.ModePlay,
+		Seed:       1,
+		PlayerName: "Ada",
+		Persist:    true,
+		GraceTicks: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, entBob := srv.SpawnPlayerSession("Bob", "", "warden")
+	bob.Persist = true
+	bobID := entBob.ID
+
+	// Move Bob out of StartRoom into hollow.lane and start combat with a wolf.
+	lane := srv.World.Get("hollow.lane")
+	if lane == nil {
+		t.Fatal("missing hollow.lane")
+	}
+	_ = srv.World.Move(entBob.ID, lane.ID)
+	wolf, err := srv.World.Spawn("hollow.wolf", lane.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wolf.AI = nil
+	srv.Combat.Start(entBob, wolf, srv.World.Tick)
+	if !entBob.InCombat() {
+		t.Fatal("expected Bob to be in combat")
+	}
+
+	// Bob types "quit" during combat -> session closes, but Bob stays in the room and in the fight!
+	_ = srv.HandleSessionLine(bob, "quit")
+	if !bob.Closed() {
+		t.Fatal("expected Bob session to close on quit")
+	}
+	if srv.World.Get(bobID) == nil {
+		t.Fatal("combat quit must not immediately despawn Bob before grace period")
+	}
+	if !entBob.HasFlag("linkdead") || !entBob.InCombat() {
+		t.Fatalf("expected Bob to be linkdead and still in combat, linkdead=%v combat=%v", entBob.HasFlag("linkdead"), entBob.InCombat())
+	}
+
+	// On the next tick, Bob is still in hollow.lane.
+	srv.Tick() // 1 tick into 3-tick grace
+	if srv.World.Get(bobID) == nil || entBob.Parent != lane.ID {
+		t.Fatalf("expected Bob still in hollow.lane on next tick, got %v", entBob.Parent)
+	}
+
+	// During the grace period, Bob dies in combat!
+	primary := srv.Pack.RPG.Primary()
+	entBob.SetRes(primary, world.Resource{Current: 0, Max: 24})
+
+	// Advance remaining grace ticks: death rules run first (moving Bob to StartRoom), then grace ends and saves Bob at StartRoom.
+	srv.Tick()
+	srv.Tick()
+
+	if srv.World.Get(bobID) != nil {
+		t.Fatalf("expected Bob to be despawned after grace period")
+	}
+	ps, err := save.ReadPlayer(srv.Pack.Meta.ID, "Bob")
+	if err != nil {
+		t.Fatalf("ReadPlayer Bob: %v", err)
+	}
+	if ps.RoomID != srv.World.StartRoom {
+		t.Fatalf("expected Bob who died during grace period to be saved at StartRoom %q, got %q", srv.World.StartRoom, ps.RoomID)
+	}
+	if !ps.Player.Alive(primary) {
+		t.Fatalf("expected saved Bob to have restored primary resource after death rules")
+	}
+	_ = ada
+}
+
+func TestStage5OldSlotStillLoadsInPlay(t *testing.T) {
+	origRoot := save.Root
+	save.Root = t.TempDir()
+	defer func() { save.Root = origRoot }()
+
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv1, sess1, err := server.Launch(server.Options{
+		PackDir:    dir,
+		Mode:       protocol.ModePlay,
+		Seed:       1,
+		PlayerName: "SoloPlayer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = srv1.HandleSessionLine(sess1, "n")
+	_ = srv1.HandleSessionLine(sess1, "n")
+	_ = srv1.HandleSessionLine(sess1, "get key")
+	_ = srv1.HandleSessionLine(sess1, "save myslot")
+
+	// Also write paired multiplayer files in the same pack save folder.
+	if err := save.WritePaired(srv1.Pack.Meta.ID, srv1.World); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now launch play mode loading "myslot".
+	srv2, sess2, err := server.Launch(server.Options{
+		PackDir: dir,
+		Mode:    protocol.ModePlay,
+		Slot:    "myslot",
+		Seed:    1,
+	})
+	if err != nil {
+		t.Fatalf("Launch with old slot failed: %v", err)
+	}
+	invEvs := filterTextEvents(srv2.HandleSessionLine(sess2, "inventory"))
+	var invText string
+	for _, te := range invEvs {
+		invText += te.Text + "\n"
+	}
+	if !strings.Contains(invText, "brass key") {
+		t.Fatalf("expected loaded single-player slot to have brass key in inventory, got:\n%s", invText)
+	}
+}
+
+func TestStage5PartyKillCreditAndXPInSameRoomOnly(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "green-hollow")
+	srv, adaSess, err := server.Launch(server.Options{
+		PackDir:    dir,
+		Mode:       protocol.ModePlay,
+		Seed:       1,
+		PlayerName: "Ada",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ada := srv.World.Get(adaSess.PlayerID)
+	_, bob := srv.SpawnPlayerSession("Bob", "", "")
+	_, cara := srv.SpawnPlayerSession("Cara", "", "")
+
+	// Put Ada, Bob, and Cara in the same party.
+	ada.PartyLeader = ada.ID
+	bob.PartyLeader = ada.ID
+	cara.PartyLeader = ada.ID
+
+	// Ada and Bob are in hollow.square; Cara is in hollow.lane (a different room).
+	_ = srv.World.Move(cara.ID, "hollow.lane")
+
+	// Accept the wolf-hunting quest for all three players.
+	if len(srv.Pack.Quests) > 0 {
+		q := srv.Pack.Quests[0]
+		quest.Start(ada, q)
+		quest.Start(bob, q)
+		quest.Start(cara, q)
+	}
+
+	wolf, err := srv.World.Spawn("hollow.wolf", ada.Parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wolf.AI = nil
+	wolf.XP = 10
+	primary := srv.Pack.RPG.Primary()
+	wolf.SetRes(primary, world.Resource{Current: 0, Max: 10})
+	wolf.SlainBy = ada.ID
+
+	srv.Tick()
+
+	// Ada and Bob (both in the room when the wolf died) gain XP and quest kill credit.
+	if ada.XP != 10 {
+		t.Fatalf("expected Ada to gain 10 XP, got %d", ada.XP)
+	}
+	if bob.XP != 10 {
+		t.Fatalf("expected party member Bob in the same room to gain 10 XP, got %d", bob.XP)
+	}
+	// Cara (in another room) gets neither XP nor quest kill credit.
+	if cara.XP != 0 {
+		t.Fatalf("expected Cara in another room to gain 0 XP, got %d", cara.XP)
+	}
+	if len(srv.Pack.Quests) > 0 {
+		q := srv.Pack.Quests[0]
+		obj := q.Objectives[0]
+		adaCur, _, _ := quest.ObjectiveProgress(ada, srv.World, q, obj)
+		bobCur, _, _ := quest.ObjectiveProgress(bob, srv.World, q, obj)
+		caraCur, _, _ := quest.ObjectiveProgress(cara, srv.World, q, obj)
+		if adaCur != 1 || bobCur != 1 {
+			t.Fatalf("expected Ada and Bob quest kill progress=1, got Ada=%d Bob=%d", adaCur, bobCur)
+		}
+		if caraCur != 0 {
+			t.Fatalf("expected Cara in another room to have quest kill progress=0, got %d", caraCur)
+		}
+	}
+}
+

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	stdnet "net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -51,7 +52,7 @@ func run(args []string) error {
 		return err
 	case "serve":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: sudengine serve <pack> [--port 4000]")
+			return fmt.Errorf("usage: sudengine serve <pack> [--port 4000] [--telnet 4023]")
 		}
 		for _, a := range args[1:] {
 			if a == "build" || a == "--build" {
@@ -60,6 +61,7 @@ func run(args []string) error {
 		}
 		packID := ""
 		port := 4000
+		telnetPort := snet.DefaultTelnetPort
 		for i := 1; i < len(args); i++ {
 			switch args[i] {
 			case "--port", "-port", "-p":
@@ -72,6 +74,16 @@ func run(args []string) error {
 					return fmt.Errorf("invalid port %q", args[i])
 				}
 				port = p
+			case "--telnet", "-telnet":
+				if i+1 >= len(args) {
+					return fmt.Errorf("--telnet requires a value")
+				}
+				i++
+				tp, err := strconv.Atoi(args[i])
+				if err != nil || tp < 0 || tp > 65535 {
+					return fmt.Errorf("invalid telnet port %q", args[i])
+				}
+				telnetPort = tp
 			default:
 				if packID == "" && !strings.HasPrefix(args[i], "-") {
 					packID = args[i]
@@ -79,12 +91,13 @@ func run(args []string) error {
 			}
 		}
 		if packID == "" {
-			return fmt.Errorf("usage: sudengine serve <pack> [--port 4000]")
+			return fmt.Errorf("usage: sudengine serve <pack> [--port 4000] [--telnet 4023]")
 		}
 		dir := resolvePack(gamesDir, packID)
 		srv, err := server.LaunchServer(server.Options{
 			PackDir: dir,
 			Mode:    protocol.ModePlay,
+			Persist: true,
 		})
 		if err != nil {
 			return err
@@ -94,9 +107,29 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Serving %s (%s) on %s\n", srv.Pack.Meta.Title, srv.Pack.Meta.ID, ln.Addr())
+		defer ln.Close()
+		var telnetLn stdnet.Listener
+		if telnetPort > 0 {
+			tAddr := fmt.Sprintf("127.0.0.1:%d", telnetPort)
+			tLn, tErr := snet.ListenTelnet(tAddr)
+			if tErr != nil {
+				return tErr
+			}
+			telnetLn = tLn
+			defer telnetLn.Close()
+		}
+		if telnetLn != nil {
+			fmt.Printf("Serving %s (%s) on %s (telnet %s)\n", srv.Pack.Meta.Title, srv.Pack.Meta.ID, ln.Addr(), telnetLn.Addr())
+		} else {
+			fmt.Printf("Serving %s (%s) on %s\n", srv.Pack.Meta.Title, srv.Pack.Meta.ID, ln.Addr())
+		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
+		if telnetLn != nil {
+			go func() {
+				_ = snet.ServeTelnet(ctx, srv, telnetLn)
+			}()
+		}
 		serveErr := make(chan error, 1)
 		go func() {
 			err := snet.Serve(ctx, srv, ln)

@@ -48,6 +48,11 @@ func Load() *Palette {
 	return p
 }
 
+// ANSI16 returns the standard ANSI-16 palette without host hex overrides.
+func ANSI16() *Palette {
+	return defaults()
+}
+
 func defaults() *Palette {
 	p := &Palette{Mode: "dark"}
 	p.applyHex(map[string]string{

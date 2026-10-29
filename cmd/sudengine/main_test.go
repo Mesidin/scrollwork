@@ -65,3 +65,22 @@ func TestServeBindErrorExitsNonZero(t *testing.T) {
 		t.Fatalf("expected a listen error, got %v", err)
 	}
 }
+
+func TestServeDefaultTelnetBindError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:4023")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	framed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := framed.Addr().(*net.TCPAddr).Port
+	framed.Close()
+	dir := filepath.Join("..", "..", "games", "old-house")
+	err = run([]string{"serve", dir, "--port", strconv.Itoa(port)})
+	if err == nil {
+		t.Fatal("expected the default telnet port to return an error")
+	}
+}

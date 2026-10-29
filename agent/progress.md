@@ -4,11 +4,11 @@ This document records the chronological development history, verified features, 
 
 ---
 
-## Current Status (as of Oct 22, 2026)
+## Current Status (as of Oct 27, 2026)
 
-* **Engine**: Go 1.22+ Bubble Tea MUD engine with runtime YAML+Lua pack loading.
-* **Test Suite**: `go test ./...` passing across all packages.
-* **Working Tree**: Clean. Stage 2 is the command queue, tell, who, gossip, and party. A swing's second-person line stays private to the fighter.
+* **Engine**: Go 1.22+ Bubble Tea MUD engine with runtime YAML+Lua pack loading, framed TCP multiplayer (`serve`/`connect`), Telnet (`127.0.0.1:4023`), account authentication, paired atomic world/player saves, link-dead grace periods, and server-driven chargen.
+* **Test Suite**: Stage 4/5 review fixes passed `go test -count=1 ./internal/save ./internal/net ./cmd/sudengine ./internal/server ./internal/commands ./internal/pack` on Oct 27, 2026. The race detector was not run (no gcc). A full `go test ./...` was not re-run in that pass.
+* **Working Tree**: Stage 4 and 5 review fixes are uncommitted. All 5 multiplayer stages are in the tree.
 * **Sample Packs**:
   * `games/old-house`: Core story regression pack.
   * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, economy, quests, and companion interactions.
@@ -427,6 +427,51 @@ This document records the chronological development history, verified features, 
   * Tests cover an oversize frame, a stalled body, an accept error, an unknown handshake, two players with the same name, idempotent `Dial` cleanup, a disconnect flushed from a full `Out`, the command cap, enqueue unblocking after shutdown, startup flame delivery, a bad `--port`, and a failed bind.
   * `go test -count=1 ./internal/server ./internal/commands ./internal/pack ./internal/client ./internal/net ./cmd/sudengine` passed. The race detector was not run: this machine has no gcc, and `-race` needs cgo.
 
+## Milestone 18: Multiplayer Stage 4 — Telnet (`internal/net/telnet.go`) (Oct 27, 2026)
+* **Telnet Listener & Server Integration (`internal/net/telnet.go`, `cmd/sudengine/main.go`)**:
+  * Added `DefaultTelnetPort = 4023`, `ListenTelnet`, `ListenAndServeTelnet`, `ServeTelnet`, and `ServeTelnetConn`.
+  * `sudengine serve <pack>` now starts the Telnet listener on `127.0.0.1:4023` (configurable via `--telnet <port>`, or disabled with `--telnet 0`) alongside the framed listener on `127.0.0.1:4000`.
+* **IAC-Aware Byte Stream Reader (`TelnetReader`)**:
+  * Implemented an RFC 854/857 state machine (`TelnetReader`) that strips `IAC WILL/WONT/DO/DONT <opt>`, `IAC SB ... IAC SE` subnegotiations (even when subnegotiation payloads contain `0x0A`), 2-byte `IAC` commands, `\r`, `\x00`, and handles backspace (`0x08` / `0x7F`) without using `bufio.Scanner`.
+  * Ensures IAC negotiation bytes are never dispatched as game commands.
+* **Password Echo Suppression**:
+  * Implemented `SuppressEcho` (`IAC WILL ECHO`, `0xFF 0xFB 0x01`) before password entry and `RestoreEcho` (`IAC WONT ECHO`, `0xFF 0xFC 0x01`) immediately after password entry, never echoing password characters back over the socket.
+* **ANSI-16 Event Rendering (`FormatTelnetEvent`, `theme.ANSI16()`)**:
+  * Exported `theme.ANSI16()` for pure 16-color terminal output without Omarchy truecolor overrides.
+  * Renders `RoomEvent` (title, description, items, occupants, exits), `PromptEvent`, `VitalsEvent`, `TextEvent` (channel-colored lines), and `DisconnectEvent` while omitting TUI-only `MapEvent`, `CombatEvent`, and `InventoryEvent` panes.
+* **Verification**:
+  * Added `internal/net/telnet_test.go`:
+    * `TestTelnetRawLookReceivesRoomTitle`: raw TCP connection sends `look\n` and receives the formatted room title and exits.
+    * `TestTelnetIACSequenceConsumedNotDispatchedAsCommand`: unit and end-to-end TCP tests verifying IAC negotiations and subnegotiations are stripped and not treated as commands.
+    * `TestTelnetEventFormatting`: verifies ANSI-16 rendering of room, prompt, vitals, and text events and omission of map/combat/inventory events.
 
-
-
+## Milestone 19: Multiplayer Stage 5 — Accounts, Paired Saves, Link-Dead & Server Chargen (Oct 27, 2026)
+* **Accounts & Bcrypt Password Hashing (`internal/save/multiplayer.go`)**:
+  * Added `Account` persisted at `saves/<pack>/accounts/<account_id>.json` with `golang.org/x/crypto/bcrypt` password hashes (`CreateAccount`, `AuthenticateAccount`, `LoadAccount`, `SaveAccount`, `AddCharacterToAccount`).
+  * One account can own and select among multiple characters.
+* **Paired Atomic World & Player Saves (`internal/save/multiplayer.go`, `internal/save/save.go`)**:
+  * Added `PlayerSave` persisted at `saves/<pack>/players/<character>.json` containing only that character's entity subgraph (character + carried/equipped inventory tree) and current room ID.
+  * Added `CutWorldWithoutPlayers` and `WritePaired` / `WritePairedWithHook` writing `saves/<pack>/world.json` (shared world state with all player entities and their inventory subgraphs stripped) alongside `saves/<pack>/players/*.json`.
+  * `paired.commit` is written before the live renames and removed only after all of them succeed. A leftover marker restores each file from `.bak`. A `.bak` is deleted only after that restore succeeds. With no marker, leftover `.bak` and `.tmp` files are discarded.
+  * Single-player `play` continues to use `save.Write` and `saves/<pack>/<slot>.json`; `save.ListInfo` skips `world.json` so single-player slot lists remain clean.
+  * Server autosaves on tick intervals (`AutosaveTicks`) and on server shutdown when `Persist` is enabled.
+* **Link-Dead Grace Period & Combat `quit` (`internal/server/server.go`)**:
+  * Dropped sockets (`closed` / `stalled`) and typing `quit` while in combat (`pl.InCombat()`) both enter the same link-dead grace period (`GraceTicks`, default 60s), setting the `linkdead` flag and leaving the character in the room and in the fight.
+  * Reconnecting during the grace period resumes that body only when the session account owns it.
+  * When the grace period expires, `reapLinkdead` runs after `reapDead`: if the character died during the grace period, death rules run first (recalling them to `StartRoom` and restoring HP). The character is saved and despawned only after that save succeeds. A failed save leaves them in the room and retries.
+* **Same-Room Party Kill Credit & XP Sharing (`internal/server/server.go`)**:
+  * Updated `killRecipients` in `reapDead` so party members present in the same room when a mob dies share quest kill credit and XP, while party members in other rooms receive neither. Pet and companion credit attribution remains intact.
+* **Server-Driven Chargen for Telnet (`internal/net/telnet.go`, `internal/rpg/rpg.go`, `internal/server/server.go`)**:
+  * Added `Chargen.PointBuy` / `Chargen.Budget()` support in `internal/rpg` and `ConnectMsg.Attrs` application in `bindConnectedPlayer`.
+  * Telnet login walks new characters through origin/race bundles, role bundles, and point-buy attribute allocation before spawning into the world.
+* **Verification**:
+  * Added unit tests in `internal/save/save_test.go`: `TestMultiplayerTwoCharactersSaveAndLoadWithoutCrossInventory`, `TestMultiplayerFailedSecondWriteLeavesPreviousPairInPlace`, `TestSinglePlayerOldSlotCoexistsWithMultiplayerSaves`, and `TestAccountBcryptAndMultipleCharacters`.
+  * Added integration tests in `internal/server/multiplayer_test.go`: `TestStage5LinkDeadStaysInRoomAndDespawnsAfterGrace`, `TestStage5CombatQuitSharesGraceAndDeathRecallsBeforeSave`, `TestStage5OldSlotStillLoadsInPlay`, and `TestStage5PartyKillCreditAndXPInSameRoomOnly`.
+  * Added end-to-end Telnet account/echo-suppression/chargen test `TestTelnetAccountLoginEchoSuppressionAndChargen` in `internal/net/telnet_test.go`.
+* **Review fixes (Oct 27, 2026)**:
+  * A paired write always stages every live character with `world.json`. One character quitting no longer duplicates or drops another character's items.
+  * Link-dead reap and a clean remote quit leave the character in the room when the save fails. Process shutdown drops sessions without starting grace. A client disconnect reason of `shutdown` starts grace.
+  * `sudengine serve` rejects an anonymous connect. A saved or link-dead body resumes only for the owning account. An empty account on a character file cannot be claimed. Guest connections on a non-persistent server can still share a display name.
+  * Telnet `IAC IAC` inside a subnegotiation stays inside it, and a data `IAC IAC` becomes a literal `0xFF`. Output doubles `0xFF` and strips ESC from text before theme colors are added. `ReadLine` fails at 256KB. A failed bind on the default Telnet port is returned. `--telnet 0` still disables Telnet.
+  * `golang.org/x/crypto` is a direct module requirement.
+  * `go test -count=1 ./internal/save ./internal/net ./cmd/sudengine ./internal/server ./internal/commands ./internal/pack` passed. The race detector was not run.

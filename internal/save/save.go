@@ -100,7 +100,7 @@ func ListInfo(packID string) ([]SlotInfo, error) {
 			continue
 		}
 		name := e.Name()
-		if filepath.Ext(name) != ".json" {
+		if filepath.Ext(name) != ".json" || name == "world.json" {
 			continue
 		}
 		info, err := e.Info()
