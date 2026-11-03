@@ -130,6 +130,7 @@ func (m Model) backToLauncher() (tea.Model, tea.Cmd) {
 	m.title = "Erickson Stories"
 	games, _ := pack.Discover(m.gamesDir)
 	m.games = games
+	m.savedConns, _ = save.LoadConnections()
 	return m, nil
 }
 

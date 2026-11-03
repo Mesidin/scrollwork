@@ -2,6 +2,7 @@ package net
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	stdnet "net"
@@ -12,11 +13,13 @@ import (
 	"time"
 
 	"sudengine/internal/protocol"
+	"sudengine/internal/save"
 	"sudengine/internal/server"
 )
 
 // NormalizeAddr validates and normalizes the server listen address.
-// The server only binds to 127.0.0.1 and refuses public or wildcard addresses.
+// Accepts loopback and private LAN addresses. A wildcard bind is rejected
+// so a framed listener cannot also publish Telnet on every interface.
 func NormalizeAddr(addr string) (string, error) {
 	if addr == "" {
 		return "127.0.0.1:4000", nil
@@ -32,10 +35,12 @@ func NormalizeAddr(addr string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if host == "" || host == "localhost" || host == "127.0.0.1" {
+	if host == "" || host == "localhost" {
 		host = "127.0.0.1"
-	} else {
-		return "", fmt.Errorf("serve only listens on 127.0.0.1, got host %q", host)
+	}
+	ip := stdnet.ParseIP(host)
+	if ip == nil || ip.IsUnspecified() || (!ip.IsLoopback() && !ip.IsPrivate()) {
+		return "", fmt.Errorf("serve only listens on 127.0.0.1 or private LAN addresses, got host %q", host)
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port < 0 || port > 65535 {
@@ -95,6 +100,62 @@ const (
 	frameBodyTimeout = 5 * time.Second
 )
 
+func buildServerInfo(srv *server.Server, kind string) ServerInfo {
+	info := ServerInfo{Type: kind}
+	if srv == nil {
+		return info
+	}
+	info.Persist = srv.Persist
+	if srv.Pack != nil {
+		info.PackID = srv.Pack.Meta.ID
+		info.Title = srv.Pack.Meta.Title
+		info.Subtitle = srv.Pack.Meta.Intro.Subtitle
+		info.PointBuy = srv.Pack.RPG.Chargen.Budget()
+		for _, r := range srv.Pack.RPG.Races {
+			info.Races = append(info.Races, BundleOption{ID: r.ID, Label: r.Name, Help: r.Description, Attrs: r.Attrs})
+		}
+		for _, r := range srv.Pack.RPG.Roles {
+			info.Roles = append(info.Roles, BundleOption{ID: r.ID, Label: r.Name, Help: r.Description, Attrs: r.Attrs})
+		}
+		for _, a := range srv.Pack.RPG.Attributes {
+			lbl := a.Label
+			if lbl == "" {
+				lbl = a.Key
+			}
+			info.Attributes = append(info.Attributes, BundleOption{ID: a.Key, Label: lbl, Base: a.Base, Max: a.Max})
+		}
+	}
+	return info
+}
+
+func resolveOrCreateAccount(packID, username, password string) (*save.Account, bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, false, fmt.Errorf("account name cannot be empty")
+	}
+	if _, err := save.Slug(username); err != nil {
+		return nil, false, fmt.Errorf("invalid account name")
+	}
+	if packID == "" {
+		return &save.Account{ID: strings.ToLower(username), Username: username}, false, nil
+	}
+	if save.AccountExists(packID, username) {
+		acc, err := save.AuthenticateAccount(packID, username, password)
+		if err != nil {
+			return nil, false, err
+		}
+		return acc, false, nil
+	}
+	if strings.TrimSpace(password) == "" {
+		return nil, false, fmt.Errorf("password cannot be empty")
+	}
+	acc, err := save.CreateAccount(packID, username, password)
+	if err != nil {
+		return nil, false, err
+	}
+	return acc, true, nil
+}
+
 // ServeConn handles a single framed TCP client connection.
 // The connection goroutine only enqueues. The actor spawns the player.
 func ServeConn(ctx context.Context, srv *server.Server, conn stdnet.Conn) {
@@ -110,7 +171,34 @@ func ServeConn(ctx context.Context, srv *server.Server, conn stdnet.Conn) {
 	if err != nil {
 		return
 	}
-	if cf.Type != "connect" && cf.Type != "command" {
+	switch cf.Type {
+	case "ping":
+		info := buildServerInfo(srv, "server_info")
+		if b, err := json.Marshal(info); err == nil {
+			_ = WriteFrame(conn, b)
+		}
+		return
+	case "auth":
+		info := buildServerInfo(srv, "auth_result")
+		packID := ""
+		if srv != nil && srv.Pack != nil {
+			packID = srv.Pack.Meta.ID
+		}
+		acc, isNew, err := resolveOrCreateAccount(packID, cf.Account, cf.Password)
+		if err != nil {
+			info.OK = false
+			info.Error = err.Error()
+		} else {
+			info.OK = true
+			info.NewAccount = isNew
+			info.Characters = append([]string(nil), acc.Characters...)
+		}
+		if b, err := json.Marshal(info); err == nil {
+			_ = WriteFrame(conn, b)
+		}
+		return
+	case "connect", "command":
+	default:
 		return
 	}
 
@@ -122,7 +210,35 @@ func ServeConn(ctx context.Context, srv *server.Server, conn stdnet.Conn) {
 	if cf.Type == "command" {
 		first = cf.Command
 	}
-	if !srv.EnqueueConnect(sess, cf.Name, cf.Race, cf.Role, first) {
+
+	accountID := ""
+	persist := false
+	if strings.TrimSpace(cf.Account) != "" {
+		packID := ""
+		if srv != nil && srv.Pack != nil {
+			packID = srv.Pack.Meta.ID
+		}
+		acc, _, authErr := resolveOrCreateAccount(packID, cf.Account, cf.Password)
+		if authErr != nil {
+			_ = writeOne(conn, protocol.DisconnectEvent{Reason: authErr.Error()})
+			return
+		}
+		accountID = acc.ID
+		persist = true
+	}
+
+	sess.Account = accountID
+	sess.Persist = persist
+	if !srv.EnqueueConnectChar(server.ConnectMsg{
+		Session: sess,
+		Account: accountID,
+		Persist: persist,
+		Name:    cf.Name,
+		Race:    cf.Race,
+		Role:    cf.Role,
+		Attrs:   cf.Attrs,
+		Command: first,
+	}) {
 		return
 	}
 

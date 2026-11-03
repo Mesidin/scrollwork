@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"sudengine/internal/docs"
+	snet "sudengine/internal/net"
 	"sudengine/internal/pack"
 	"sudengine/internal/protocol"
 	"sudengine/internal/save"
@@ -27,6 +28,8 @@ const (
 	stateContinue
 	stateChargen
 	stateHelp
+	stateConnect
+	stateRemoteLogin
 	stateGame
 )
 
@@ -35,9 +38,34 @@ type Model struct {
 	width  int
 	height int
 
-	games    []pack.Info
-	cursor   int
-	gamesDir string
+	games      []pack.Info
+	savedConns []save.Connection
+	cursor     int
+	gamesDir   string
+
+	discovered    []snet.ServerInfo
+	scanning      bool
+	connectTyping bool
+
+	remoteAddr   string
+	remoteInfo   snet.ServerInfo
+	rlStep       int
+	rlAccount    string
+	rlPassword   string
+	rlCharName   string
+	rlRace       int
+	rlRole       int
+	rlPoints     int
+	rlAttrs      map[string]int
+	rlAttrIdx    int
+	dialing      bool
+	dialNote     string
+	dialGen      int
+	pendingConn  *save.Connection
+	remoteJoined bool
+	remoteNotice string
+	dialHome     state
+	dialStep     int
 
 	input   textinput.Model
 	log     viewport.Model
@@ -95,18 +123,20 @@ func New(gamesDir string) Model {
 	side.SoftWrap = true
 
 	games, _ := pack.Discover(gamesDir)
+	conns, _ := save.LoadConnections()
 	m := Model{
-		state:     stateLauncher,
-		games:     games,
-		gamesDir:  gamesDir,
-		input:     ti,
-		log:       log,
-		side:      side,
-		layout:    []string{"output", "map", "vitals"},
-		prompt:    "> ",
-		title:     "Erickson Stories",
-		theme:     theme.Load(),
-		helpTopic: -1,
+		state:      stateLauncher,
+		games:      games,
+		savedConns: conns,
+		gamesDir:   gamesDir,
+		input:      ti,
+		log:        log,
+		side:       side,
+		layout:     []string{"output", "map", "vitals"},
+		prompt:     "> ",
+		title:      "Erickson Stories",
+		theme:      theme.Load(),
+		helpTopic:  -1,
 	}
 	return m
 }
@@ -124,6 +154,88 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.theme.ReloadIfChanged()
 	}
 	switch msg := msg.(type) {
+	case serversScannedMsg:
+		m.scanning = false
+		m.discovered = msg.servers
+		return m, nil
+	case probeResultMsg:
+		if msg.gen != m.dialGen {
+			return m, nil
+		}
+		m.finishNetOp()
+		if msg.err != nil {
+			m.errLine = fmt.Sprintf("Could not reach %s: %v", msg.addr, msg.err)
+			return m, nil
+		}
+		m = m.openRemoteLogin(msg.addr, msg.info)
+		return m, m.input.Focus()
+	case authResultMsg:
+		if msg.gen != m.dialGen {
+			return m, nil
+		}
+		m.finishNetOp()
+		if msg.err != nil {
+			m.errLine = msg.err.Error()
+			return m, m.input.Focus()
+		}
+		m.input.EchoMode = textinput.EchoNormal
+		m.rlPassword = msg.password
+		m.remoteInfo = msg.info
+		m.errLine = ""
+		if len(msg.info.Characters) > 0 {
+			m.rlStep = rlStepCharSelect
+			m.menuCursor = 0
+			return m, nil
+		}
+		m.rlStep = rlStepCharName
+		m.input.Prompt = "Character name: "
+		m.input.Placeholder = "who are you?"
+		m.input.Reset()
+		return m, m.input.Focus()
+	case remoteDialMsg:
+		if msg.gen != m.dialGen {
+			if msg.cleanup != nil {
+				msg.cleanup()
+			}
+			if msg.cancel != nil {
+				msg.cancel()
+			}
+			return m, nil
+		}
+		m.dialing = false
+		m.dialNote = ""
+		if msg.err != nil {
+			if msg.cancel != nil {
+				msg.cancel()
+			}
+			m.cancel = nil
+			m.pendingConn = nil
+			m.errLine = fmt.Sprintf("Connect failed (%s): %v", m.remoteAddr, msg.err)
+			return m, nil
+		}
+		parent := msg.cancel
+		cleanup := msg.cleanup
+		m.cancel = func() {
+			if cleanup != nil {
+				cleanup()
+			}
+			if parent != nil {
+				parent()
+			}
+		}
+		m.srv = nil
+		m.sess = msg.sess
+		m.state = stateGame
+		m.remoteJoined = false
+		m.lines = nil
+		m.room = protocol.RoomEvent{}
+		m.log.SetContent("")
+		m.input.EchoMode = textinput.EchoNormal
+		m.input.Prompt = "> "
+		m.input.Placeholder = "look, n, get lamp..."
+		m.input.Reset()
+		m.layoutPanes()
+		return m, tea.Batch(waitEvent(msg.sess), m.input.Focus())
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -158,10 +270,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateChargen(msg)
 		case stateHelp:
 			return m.updateHelp(msg)
+		case stateConnect:
+			return m.updateConnect(msg)
+		case stateRemoteLogin:
+			return m.updateRemoteLogin(msg)
 		default:
 			return m.updateGameKey(msg)
 		}
 	case protocol.TextEvent:
+		if m.pendingConn != nil && !m.remoteJoined && msg.Text != "" {
+			m.remoteNotice = msg.Text
+		}
 		m.appendChan(msg.Channel, msg.Text)
 		return m, waitEvent(m.sess)
 	case protocol.PromptEvent:
@@ -175,6 +294,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case protocol.RoomEvent:
 		m.room = msg
 		m.refreshSide()
+		m.noteRemoteJoined()
 		return m, waitEvent(m.sess)
 	case protocol.VitalsEvent:
 		m.vitals = msg
@@ -206,6 +326,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.title = msg.Title
 		return m, waitEvent(m.sess)
 	case protocol.DisconnectEvent:
+		if m.pendingConn != nil && !m.remoteJoined {
+			return m.refuseRemote(msg.Reason)
+		}
 		m.append("Disconnected: " + msg.Reason)
 		if m.cancel != nil {
 			m.cancel()
@@ -221,6 +344,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateLauncher(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.dialing {
+		return m.cancelNetOp(msg)
+	}
+	items := m.launcherItems()
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -229,19 +356,40 @@ func (m Model) updateLauncher(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < len(m.games)-1 {
+		if m.cursor < len(items)-1 {
 			m.cursor++
 		}
+	case "c":
+		return m.openConnect()
+	case "d", "x", "delete", "backspace":
+		if m.cursor >= 0 && m.cursor < len(items) && items[m.cursor].kind == launcherSaved {
+			_ = save.RemoveConnection(items[m.cursor].conn)
+			m.savedConns, _ = save.LoadConnections()
+			newItems := m.launcherItems()
+			if m.cursor >= len(newItems) {
+				m.cursor = len(newItems) - 1
+			}
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+		}
 	case "enter", "p":
-		if len(m.games) == 0 {
+		if m.cursor < 0 || m.cursor >= len(items) {
 			return m, nil
 		}
-		return m.openIntro(m.games[m.cursor], protocol.ModePlay)
+		it := items[m.cursor]
+		switch it.kind {
+		case launcherPack:
+			return m.openIntro(it.pack, protocol.ModePlay)
+		case launcherSaved:
+			return m.connectSaved(it.conn)
+		case launcherConnect:
+			return m.openConnect()
+		}
 	case "b":
-		if len(m.games) == 0 {
-			return m, nil
+		if m.cursor >= 0 && m.cursor < len(items) && items[m.cursor].kind == launcherPack {
+			return m.openIntro(items[m.cursor].pack, protocol.ModeBuild)
 		}
-		return m.openIntro(m.games[m.cursor], protocol.ModeBuild)
 	case "n":
 		return m.newPack()
 	}
@@ -603,6 +751,10 @@ func (m Model) View() tea.View {
 		body = m.viewChargen()
 	case stateHelp:
 		body = m.viewHelp()
+	case stateConnect:
+		body = m.viewConnect()
+	case stateRemoteLogin:
+		body = m.viewRemoteLogin()
 	default:
 		body = m.viewGame()
 	}
@@ -618,18 +770,60 @@ func (m Model) viewLauncher() string {
 	var b strings.Builder
 	head := m.theme.Title.Render("ERICKSON STORIES")
 	b.WriteString(head + "\n")
-	b.WriteString("A text world engine. Enter play, b build, n new pack, q quit.\n\n")
+	b.WriteString("A text world engine. Enter play, c connect, b build, n new pack, q quit.\n\n")
 	if len(m.games) == 0 {
-		b.WriteString("No game packs in " + m.gamesDir + ".\nPress n to create one.\n")
+		b.WriteString("No local game packs in " + m.gamesDir + ". Press n to create one.\n")
 	}
-	for i, g := range m.games {
+	idx := 0
+	for _, g := range m.games {
 		cur := "  "
-		if i == m.cursor {
+		if idx == m.cursor {
 			cur = "> "
 		}
-		b.WriteString(fmt.Sprintf("%s%s  (%s)\n", cur, g.Title, g.ID))
+		line := fmt.Sprintf("%s%s  (%s)", cur, g.Title, g.ID)
+		if idx == m.cursor {
+			line = m.theme.Cursor.Render(line)
+		}
+		b.WriteString(line + "\n")
+		idx++
+	}
+	if len(m.savedConns) > 0 {
+		b.WriteString("\n" + m.section("saved servers") + "\n")
+		for _, c := range m.savedConns {
+			cur := "  "
+			if idx == m.cursor {
+				cur = "> "
+			}
+			line := fmt.Sprintf("%s%s  (%s)", cur, c.Label(), c.Addr)
+			if idx == m.cursor {
+				line = m.theme.Cursor.Render(line)
+			}
+			b.WriteString(line + "\n")
+			idx++
+		}
 	}
 	b.WriteString("\n")
+	cur := "  "
+	if idx == m.cursor {
+		cur = "> "
+	}
+	connLine := cur + "Connect to server..."
+	if idx == m.cursor {
+		connLine = m.theme.Cursor.Render(connLine)
+	}
+	b.WriteString(connLine + "\n")
+
+	if m.dialing {
+		b.WriteString("\n" + m.theme.Muted.Render(m.dialStatus()) + "\nesc cancel\n")
+	}
+	if m.errLine != "" {
+		b.WriteString("\n" + m.theme.Error.Render(m.errLine) + "\n")
+	}
+	if len(m.savedConns) > 0 {
+		b.WriteString("\n↑↓ move   enter play/connect   c connect menu   d remove saved   q quit\n")
+	} else {
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 

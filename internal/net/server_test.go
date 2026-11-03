@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"sudengine/internal/client"
 	"sudengine/internal/pack"
 	"sudengine/internal/protocol"
 	"sudengine/internal/server"
@@ -128,102 +127,6 @@ func TestListenerAcceptsFramedConnectionAndCommand(t *testing.T) {
 
 	if !promptReceived {
 		t.Fatalf("actor loop did not process command and reply with prompt")
-	}
-}
-
-// Test 2: connect to localhost shows the same room play shows for that pack.
-func TestConnectShowsSameRoomAsPlay(t *testing.T) {
-	packDir := findOldHouse(t)
-
-	// 1. Launch in local single-player "play" mode to see what room play shows
-	localSrv, localSess, err := server.Launch(server.Options{
-		PackDir: packDir,
-		Mode:    protocol.ModePlay,
-	})
-	if err != nil {
-		t.Fatalf("local Launch failed: %v", err)
-	}
-	ctxLocal, cancelLocal := context.WithCancel(context.Background())
-	defer cancelLocal()
-	go localSrv.Run(ctxLocal)
-
-	var playRoom protocol.RoomEvent
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		localSess.Flush()
-		select {
-		case ev := <-localSess.Out:
-			if r, ok := ev.(protocol.RoomEvent); ok {
-				playRoom = r
-				goto playDone
-			}
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-playDone:
-	if playRoom.ID == "" {
-		t.Fatalf("play mode did not emit RoomEvent")
-	}
-
-	// 2. Launch server mode and connect via remote Dial
-	remoteSrv, err := server.LaunchServer(server.Options{
-		PackDir: packDir,
-		Mode:    protocol.ModePlay,
-	})
-	if err != nil {
-		t.Fatalf("LaunchServer failed: %v", err)
-	}
-
-	ln, err := Listen("127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen failed: %v", err)
-	}
-	defer ln.Close()
-
-	ctxRemote, cancelRemote := context.WithCancel(context.Background())
-	defer cancelRemote()
-
-	go remoteSrv.Run(ctxRemote)
-	go func() {
-		_ = Serve(ctxRemote, remoteSrv, ln)
-	}()
-
-	clientSess, cleanup, err := Dial(ctxRemote, ln.Addr().String(), "you", "", "")
-	if err != nil {
-		t.Fatalf("Dial failed: %v", err)
-	}
-	defer cleanup()
-
-	m := client.ConnectPlay(clientSess, cleanup)
-
-	// Pump events into client model until it receives the room event
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		clientSess.Flush()
-		select {
-		case ev := <-clientSess.Out:
-			updated, _ := m.Update(ev)
-			m = updated.(client.Model)
-			if m.CurrentRoom().ID != "" {
-				goto connectDone
-			}
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-connectDone:
-	remoteRoom := m.CurrentRoom()
-	if remoteRoom.ID == "" {
-		t.Fatalf("remote client did not receive room")
-	}
-
-	if remoteRoom.ID != playRoom.ID {
-		t.Fatalf("room ID mismatch: play had %q, connect had %q", playRoom.ID, remoteRoom.ID)
-	}
-	if remoteRoom.Title != playRoom.Title {
-		t.Fatalf("room Title mismatch: play had %q, connect had %q", playRoom.Title, remoteRoom.Title)
-	}
-	if remoteRoom.Description != playRoom.Description {
-		t.Fatalf("room Description mismatch: play had %q, connect had %q", playRoom.Description, remoteRoom.Description)
 	}
 }
 

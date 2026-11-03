@@ -112,7 +112,7 @@ func TestPersistConnectRequiresMatchingAccount(t *testing.T) {
 	}
 
 	alice := &Session{Out: make(chan protocol.Event, 32), In: make(chan string, 4)}
-	if err := srv.bindConnectedPlayer(ConnectMsg{Session: alice, Account: "alice", Persist: true, Name: "Alicia"}); err != nil {
+	if err := srv.bindConnectedPlayer(ConnectMsg{Session: alice, Account: "alice", Persist: true, Name: "Alicia", Role: "reckless"}); err != nil {
 		t.Fatal(err)
 	}
 	srv.AttachSession(alice)

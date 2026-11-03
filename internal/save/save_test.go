@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"sudengine/internal/world"
@@ -56,6 +57,56 @@ func TestAccountsBcryptAndMultipleCharacters(t *testing.T) {
 	}
 	if !loaded.OwnsCharacter("Ada") || !loaded.OwnsCharacter("Beatrice") || len(loaded.Characters) != 2 {
 		t.Fatalf("expected 2 characters on account, got %v", loaded.Characters)
+	}
+}
+
+func TestCreateAccountExclusive(t *testing.T) {
+	origRoot := Root
+	Root = t.TempDir()
+	defer func() { Root = origRoot }()
+
+	origCost := BcryptCost
+	BcryptCost = 4
+	defer func() { BcryptCost = origCost }()
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	wins := make([]*Account, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			acc, err := CreateAccount("old-house", "Racer", "secret-pass")
+			wins[i] = acc
+			errs[i] = err
+		}()
+	}
+	wg.Wait()
+
+	ok := 0
+	for i, err := range errs {
+		if err == nil {
+			ok++
+			if wins[i] == nil || wins[i].PasswordHash == "" || len(wins[i].Characters) != 0 {
+				t.Fatalf("winner %d has an incomplete account: %+v", i, wins[i])
+			}
+			continue
+		}
+		if !errors.Is(err, ErrAccountExists) {
+			t.Fatalf("loser %d: %v", i, err)
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("expected one creator to win, got %d", ok)
+	}
+	loaded, err := AuthenticateAccount("old-house", "Racer", "secret-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Characters) != 0 || loaded.PasswordHash == "" {
+		t.Fatalf("raced create rewrote the account: %+v", loaded)
 	}
 }
 

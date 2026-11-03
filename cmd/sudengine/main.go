@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"sudengine/internal/client"
 	snet "sudengine/internal/net"
@@ -118,8 +119,33 @@ func run(args []string) error {
 			telnetLn = tLn
 			defer telnetLn.Close()
 		}
+		var lanListeners []stdnet.Listener
+		var lanAddrs []string
+		for _, ip := range snet.LocalLANIPs() {
+			lAddr := fmt.Sprintf("%s:%d", ip, port)
+			lLn, lErr := snet.Listen(lAddr)
+			if lErr != nil {
+				fmt.Fprintf(os.Stderr, "lan listen %s: %v\n", lAddr, lErr)
+				continue
+			}
+			lanListeners = append(lanListeners, lLn)
+			lanAddrs = append(lanAddrs, lLn.Addr().String())
+		}
+		defer func() {
+			for _, lLn := range lanListeners {
+				_ = lLn.Close()
+			}
+		}()
+
+		var extras []string
+		if len(lanAddrs) > 0 {
+			extras = append(extras, "LAN "+strings.Join(lanAddrs, ", "))
+		}
 		if telnetLn != nil {
-			fmt.Printf("Serving %s (%s) on %s (telnet %s)\n", srv.Pack.Meta.Title, srv.Pack.Meta.ID, ln.Addr(), telnetLn.Addr())
+			extras = append(extras, fmt.Sprintf("telnet %s", telnetLn.Addr()))
+		}
+		if len(extras) > 0 {
+			fmt.Printf("Serving %s (%s) on %s (%s)\n", srv.Pack.Meta.Title, srv.Pack.Meta.ID, ln.Addr(), strings.Join(extras, ", "))
 		} else {
 			fmt.Printf("Serving %s (%s) on %s\n", srv.Pack.Meta.Title, srv.Pack.Meta.ID, ln.Addr())
 		}
@@ -128,6 +154,12 @@ func run(args []string) error {
 		if telnetLn != nil {
 			go func() {
 				_ = snet.ServeTelnet(ctx, srv, telnetLn)
+			}()
+		}
+		for _, lLn := range lanListeners {
+			lLn := lLn
+			go func() {
+				_ = snet.Serve(ctx, srv, lLn)
 			}()
 		}
 		serveErr := make(chan error, 1)
@@ -145,14 +177,22 @@ func run(args []string) error {
 		return <-serveErr
 	case "connect":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: sudengine connect <host:port> [--name <name>] [--race <race>] [--role <role>]")
+			return fmt.Errorf("usage: sudengine connect <host:port> [--account <user>] [--name <name>] [--race <race>] [--role <role>]")
 		}
-		addr := args[1]
+		addr := snet.NormalizeClientAddr(args[1])
+		account := ""
 		name := "you"
 		race := ""
 		role := ""
 		for i := 2; i < len(args); i++ {
 			switch args[i] {
+			case "--account", "-account", "-a":
+				if i+1 < len(args) {
+					i++
+					account = args[i]
+				}
+			case "--password", "-password", "--pass", "-pass":
+				return fmt.Errorf("passwords are read from the terminal, not from --password")
 			case "--name", "-name", "-n":
 				if i+1 < len(args) {
 					i++
@@ -170,9 +210,42 @@ func run(args []string) error {
 				}
 			}
 		}
+		if account == "" {
+			probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			info, err := snet.Probe(probeCtx, addr)
+			probeCancel()
+			if err != nil {
+				return fmt.Errorf("could not reach %s: %w", addr, err)
+			}
+			if info.Persist {
+				m, err := client.ConnectAddress(gamesDir, addr)
+				if err != nil {
+					return err
+				}
+				_, err = tea.NewProgram(m).Run()
+				return err
+			}
+		}
+		password := ""
+		if account != "" {
+			pw, err := promptSecret("Password: ")
+			if err != nil {
+				return err
+			}
+			if pw == "" {
+				return fmt.Errorf("password cannot be empty")
+			}
+			password = pw
+		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		sess, cleanup, err := snet.Dial(ctx, addr, name, race, role)
+		sess, cleanup, err := snet.DialWithLogin(ctx, addr, snet.LoginOptions{
+			Account:  account,
+			Password: password,
+			Name:     name,
+			Race:     race,
+			Role:     role,
+		})
 		if err != nil {
 			return err
 		}

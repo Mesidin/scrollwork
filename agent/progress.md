@@ -4,11 +4,10 @@ This document records the chronological development history, verified features, 
 
 ---
 
-## Current Status (as of Oct 27, 2026)
+## Current Status (as of Nov 2, 2026)
 
-* **Engine**: Go 1.22+ Bubble Tea MUD engine with runtime YAML+Lua pack loading, framed TCP multiplayer (`serve`/`connect`), Telnet (`127.0.0.1:4023`), account authentication, paired atomic world/player saves, link-dead grace periods, and server-driven chargen.
-* **Test Suite**: Stage 4/5 review fixes passed `go test -count=1 ./internal/save ./internal/net ./cmd/sudengine ./internal/server ./internal/commands ./internal/pack` on Oct 27, 2026. The race detector was not run (no gcc). A full `go test ./...` was not re-run in that pass.
-* **Working Tree**: Stage 4 and 5 review fixes are uncommitted. All 5 multiplayer stages are in the tree.
+* **Engine**: Go Bubble Tea MUD engine with runtime YAML+Lua pack loading, framed TCP multiplayer (`serve`/`connect`), Telnet (`127.0.0.1:4023`), account authentication, paired atomic world/player saves, link-dead grace periods, server-side chargen checks, LAN discovery, and saved character bookmarks.
+* **Test Suite**: Connect-login review fixes passed `go test -count=1 -timeout 240s ./internal/save ./internal/net ./cmd/sudengine ./internal/server ./internal/commands ./internal/pack ./internal/client ./internal/rpg` on Nov 2, 2026. The race detector was not run (no gcc). A full `go test ./...` was not re-run in that pass.
 * **Sample Packs**:
   * `games/old-house`: Core story regression pack.
   * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, economy, quests, and companion interactions.
@@ -475,3 +474,26 @@ This document records the chronological development history, verified features, 
   * Telnet `IAC IAC` inside a subnegotiation stays inside it, and a data `IAC IAC` becomes a literal `0xFF`. Output doubles `0xFF` and strips ESC from text before theme colors are added. `ReadLine` fails at 256KB. A failed bind on the default Telnet port is returned. `--telnet 0` still disables Telnet.
   * `golang.org/x/crypto` is a direct module requirement.
   * `go test -count=1 ./internal/save ./internal/net ./cmd/sudengine ./internal/server ./internal/commands ./internal/pack` passed. The race detector was not run.
+
+## Milestone 20: Launcher Connect, LAN Discovery, Framed Account Login & Saved Character Bookmarks (Oct 29, 2026)
+* **Framed Protocol Account Authentication & Server Probe (`internal/net/frame.go`, `internal/net/server.go`, `internal/net/client.go`)**:
+  * Extended `ClientFrame` with `Account`, `Password`, `Attrs`, and `"ping"` / `"auth"` request types.
+  * Added `ServerInfo` and `BundleOption` returned by `ServeConn` on `"ping"` (pack ID, title, subtitle, persist flag, origins, roles, point-buy budget, attributes) and `"auth"` (authenticating or creating accounts and returning owned character names).
+  * Added `Probe`, `Authenticate`, `DialWithLogin`, `LocalLANIPs`, and `DiscoverServers` in `internal/net/client.go`.
+  * Updated `NormalizeAddr` and `sudengine serve` to also listen on active private LAN IPv4 interfaces so other computers on the local network can discover and connect.
+* **Saved Character Bookmarks (`internal/save/connections.go`)**:
+  * Added `save.Connection` (`LoadConnections`, `SaveConnection`, `RemoveConnection`) persisted in `saves/connections.json`.
+  * Stores server `addr`, `pack_id`, `title`, `account`, `password`, `character`, `race`, and `role`, formatted as `<World Title> — <Character>` (`Connection.Label()`).
+* **TUI Launcher Connect, LAN Scanner & Remote Login (`internal/client/connect.go`, `internal/client/client.go`, `cmd/sudengine/main.go`)**:
+  * Main launcher lists saved server characters (`<World Title> — <Character>  (host:port)`) and `Connect to server...` (or press `c`). Selecting a saved character reconnects and logs straight into the game with one keypress (`d` removes a saved bookmark).
+  * `Connect to server...` scans `127.0.0.1:4000` and local `/24` LAN subnets on port 4000 in the background (`r` to rescan) and also allows typing an IP or `host:port` manually (`t` or `Enter IP / host:port...`).
+  * Selecting a server walks through Account -> Password (masked) -> Character selection (or new character creation with pack origins, roles, and point buy), automatically saves the `<World Title> — <Character>` bookmark, and enters the full Bubble Tea game UI.
+* **Verification**:
+  * Added `TestFramedPersistentLoginAndSavedConnections` in `internal/net/client_test.go`.
+* **Review fixes (Nov 2, 2026)**:
+  * A new framed character uses the same origin, role, and point-buy rules as Telnet. Unknown or over-budget spends are refused before spawn. A zero budget drops client spends. Attribute base, max, and bundle bonuses are included in `ServerInfo` so the launcher can enforce the same cap.
+  * Creating an account uses an exclusive file create. A second login cannot replace a password hash or a character list.
+  * `sudengine connect` returns a probe error instead of dialing anonymously. The password is read from the terminal, not from `--password`.
+  * Probe, sign-in, and dial run as Bubble Tea commands with a deadline. Canceling aborts the dial. A refused character stays on the login step. The bookmark is written after the room arrives.
+  * `saves/connections.json` is owner-only on Windows. Wildcard binds are rejected, known virtual adapters are skipped, and a failed LAN bind is logged.
+  * `go test -count=1 -timeout 240s ./internal/save ./internal/net ./cmd/sudengine ./internal/server ./internal/commands ./internal/pack ./internal/client ./internal/rpg` passed. The race detector was not run.

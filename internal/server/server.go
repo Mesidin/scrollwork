@@ -656,14 +656,18 @@ func (s *Server) bindConnectedPlayer(m ConnectMsg) error {
 	}
 
 	if pl == nil {
-		pl = pack.SpawnPlayer(s.World, s.Pack, name, m.Race, m.Role)
-		if len(m.Attrs) > 0 {
+		// Guests may omit an origin or role. A saved character must pick each
+		// list the pack offers. A zero point-buy budget drops client spends.
+		race, role, spend, err := s.Pack.RPG.AcceptChargen(m.Race, m.Role, m.Attrs, sess.Persist)
+		if err != nil {
+			return err
+		}
+		pl = pack.SpawnPlayer(s.World, s.Pack, name, race, role)
+		for k, v := range spend {
 			if pl.Attrs == nil {
 				pl.Attrs = map[string]int{}
 			}
-			for k, v := range m.Attrs {
-				pl.Attrs[k] += v
-			}
+			pl.Attrs[k] += v
 		}
 		if sess.Account != "" {
 			s.rememberOwner(pl.ID, sess.Account)

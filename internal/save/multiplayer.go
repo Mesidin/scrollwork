@@ -113,9 +113,6 @@ func CreateAccount(packID, username, password string) (*Account, error) {
 	if password == "" {
 		return nil, fmt.Errorf("password cannot be empty")
 	}
-	if AccountExists(packID, username) {
-		return nil, ErrAccountExists
-	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), BcryptCost)
 	if err != nil {
 		return nil, err
@@ -126,10 +123,43 @@ func CreateAccount(packID, username, password string) (*Account, error) {
 		PasswordHash: string(hash),
 		CreatedAt:    time.Now().UTC(),
 	}
-	if err := SaveAccount(packID, acc); err != nil {
+	if err := createAccountFile(packID, acc); err != nil {
 		return nil, err
 	}
 	return acc, nil
+}
+
+// createAccountFile writes the account once. A second creator gets
+// ErrAccountExists instead of replacing a hash or a character list.
+func createAccountFile(packID string, acc *Account) error {
+	path, err := AccountPath(packID, acc.Username)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(acc, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return ErrAccountExists
+		}
+		return err
+	}
+	_, werr := f.Write(b)
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(path)
+		if werr != nil {
+			return werr
+		}
+		return cerr
+	}
+	return nil
 }
 
 func SaveAccount(packID string, acc *Account) error {

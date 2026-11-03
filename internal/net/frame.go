@@ -192,13 +192,46 @@ func DecodeEvent(data []byte) (protocol.Event, error) {
 }
 
 type ClientFrame struct {
-	Type    string `json:"t"`
-	Command string `json:"command,omitempty"`
-	Line    string `json:"line,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Race    string `json:"race,omitempty"`
-	Role    string `json:"role,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	Type     string         `json:"t"`
+	Command  string         `json:"command,omitempty"`
+	Line     string         `json:"line,omitempty"`
+	Account  string         `json:"account,omitempty"`
+	Password string         `json:"password,omitempty"`
+	Name     string         `json:"name,omitempty"`
+	Race     string         `json:"race,omitempty"`
+	Role     string         `json:"role,omitempty"`
+	Attrs    map[string]int `json:"attrs,omitempty"`
+	Reason   string         `json:"reason,omitempty"`
+}
+
+// BundleOption describes a selectable origin, role, or attribute from the server's pack.
+// Base and Max are set on attributes. Attrs carries an origin or role's bonuses
+// so a client can preview the same point-buy cap the server enforces.
+type BundleOption struct {
+	ID    string         `json:"id"`
+	Label string         `json:"label"`
+	Help  string         `json:"help,omitempty"`
+	Base  int            `json:"base,omitempty"`
+	Max   int            `json:"max,omitempty"`
+	Attrs map[string]int `json:"attrs,omitempty"`
+}
+
+// ServerInfo is returned by a framed server in response to a "ping" or "auth" frame.
+type ServerInfo struct {
+	Type       string         `json:"t"`
+	Addr       string         `json:"addr,omitempty"`
+	PackID     string         `json:"pack_id"`
+	Title      string         `json:"title"`
+	Subtitle   string         `json:"subtitle,omitempty"`
+	Persist    bool           `json:"persist"`
+	Races      []BundleOption `json:"races,omitempty"`
+	Roles      []BundleOption `json:"roles,omitempty"`
+	PointBuy   int            `json:"point_buy,omitempty"`
+	Attributes []BundleOption `json:"attributes,omitempty"`
+	OK         bool           `json:"ok,omitempty"`
+	Error      string         `json:"error,omitempty"`
+	NewAccount bool           `json:"new_account,omitempty"`
+	Characters []string       `json:"characters,omitempty"`
 }
 
 func EncodeCommand(cmd string) ([]byte, error) {
@@ -214,6 +247,30 @@ func EncodeConnect(name, race, role string) ([]byte, error) {
 		Name: name,
 		Race: race,
 		Role: role,
+	})
+}
+
+func EncodeConnectAuth(account, password, name, race, role string, attrs map[string]int) ([]byte, error) {
+	return json.Marshal(ClientFrame{
+		Type:     "connect",
+		Account:  account,
+		Password: password,
+		Name:     name,
+		Race:     race,
+		Role:     role,
+		Attrs:    attrs,
+	})
+}
+
+func EncodePing() ([]byte, error) {
+	return json.Marshal(ClientFrame{Type: "ping"})
+}
+
+func EncodeAuth(account, password string) ([]byte, error) {
+	return json.Marshal(ClientFrame{
+		Type:     "auth",
+		Account:  account,
+		Password: password,
 	})
 }
 
