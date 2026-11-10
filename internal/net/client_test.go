@@ -2,11 +2,12 @@ package net_test
 
 import (
 	"context"
+	stdnet "net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	"strings"
 	"sudengine/internal/client"
 	snet "sudengine/internal/net"
 	"sudengine/internal/pack"
@@ -352,5 +353,42 @@ func TestFramedChargenRejectsSkippedRoleAndDropsUnbudgetedStats(t *testing.T) {
 	}
 	if ps.Player.Attrs["body"] == 40 {
 		t.Fatal("unbudgeted body spend was applied")
+	}
+}
+
+func TestUDPDiscoveryFindsCustomPortServer(t *testing.T) {
+	packDir := findOldHouseDir(t)
+	srv, err := server.LaunchServer(server.Options{
+		PackDir: packDir,
+		Mode:    protocol.ModePlay,
+		Persist: true,
+	})
+	if err != nil {
+		t.Fatalf("LaunchServer: %v", err)
+	}
+
+	pc, err := snet.ListenDiscovery(0)
+	if err != nil {
+		t.Fatalf("ListenDiscovery: %v", err)
+	}
+	defer pc.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	udpAddr := pc.LocalAddr().(*stdnet.UDPAddr)
+	go func() {
+		_ = snet.ServeDiscovery(ctx, srv, pc, 4567)
+	}()
+
+	found := snet.DiscoverUDP(ctx, udpAddr.Port, 300*time.Millisecond)
+	matched := false
+	for _, info := range found {
+		if info.Title == "The Old House" && strings.HasSuffix(info.Addr, ":4567") {
+			matched = true
+		}
+	}
+	if !matched {
+		t.Fatalf("expected DiscoverUDP to find custom port :4567 server, got: %+v", found)
 	}
 }

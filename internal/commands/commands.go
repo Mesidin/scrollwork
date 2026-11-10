@@ -48,6 +48,11 @@ type Context struct {
 	TellPlayer       func(player *world.Entity, channel protocol.Channel, text string)
 	Broadcast        func(channel protocol.Channel, text string)
 	ConnectedPlayers func() []*world.Entity
+	// ChangePassword is non-nil when this session may change an account password.
+	// The function queues the check off the world tick.
+	ChangePassword func(oldPass, newPass string) error
+	// Harm applies amount of the primary resource through the combat engine.
+	Harm func(target *world.Entity, amount int, verb string)
 }
 
 func (c *Context) Print(format string, args ...any) {
@@ -135,7 +140,10 @@ func init() {
 	register("party", partyCmd)
 	register("gt", partyCmd)
 	register("tell", tellCmd)
+	register("whisper", whisperCmd)
+	register("shout", shoutCmd)
 	register("gossip", gossipCmd)
+	register("password", passwordCmd)
 	register("invite", inviteCmd)
 	register("join", joinCmd)
 	register("order", orderCmd)
@@ -926,6 +934,16 @@ func useAbility(c *Context, a *rpg.Ability, p Parsed) {
 			c.Print("%s", err.Error())
 			return
 		}
+		if tgt != nil && tgt.Kind == world.KindPlayer && tgt.ID != c.Actor.ID && abilityIsHostile(a) {
+			if room := c.World.RoomOf(c.Actor); room == nil || !room.HasFlag("pvp") {
+				c.Print("You cannot attack other players here.")
+				return
+			}
+		}
+	}
+	damages, ok := rollAbilityDamage(c, a, tgt)
+	if !ok {
+		return
 	}
 	for res, cost := range a.Cost {
 		c.Actor.AdjustRes(res, -cost)
@@ -938,6 +956,7 @@ func useAbility(c *Context, a *rpg.Ability, p Parsed) {
 	} else {
 		c.Print("You use %s.", a.Name)
 	}
+	di := 0
 	for _, ef := range a.Effects {
 		if ef.Heal != nil && tgt != nil {
 			n := 1
@@ -952,6 +971,11 @@ func useAbility(c *Context, a *rpg.Ability, p Parsed) {
 			}
 			tgt.AdjustRes(res, n)
 		}
+		if ef.Damage != nil && tgt != nil {
+			hit := damages[di]
+			di++
+			applyAbilityDamage(c, tgt, hit.res, hit.n)
+		}
 		if ef.SetFlag != "" && tgt != nil {
 			tgt.SetFlag(ef.SetFlag, true)
 		}
@@ -962,6 +986,122 @@ func useAbility(c *Context, a *rpg.Ability, p Parsed) {
 	if a.Scripts != "" {
 		_, _ = c.Scripts.CallFile(a.Scripts, "on_use", c.Actor, tgt)
 	}
+}
+
+type rolledDamage struct {
+	res string
+	n   int
+}
+
+// rollAbilityDamage rolls each damage effect once. A bad expression fails the
+// ability before its cost is paid. A negative total is clamped to 0.
+func rollAbilityDamage(c *Context, a *rpg.Ability, tgt *world.Entity) ([]rolledDamage, bool) {
+	var out []rolledDamage
+	for _, ef := range a.Effects {
+		if ef.Damage == nil || tgt == nil {
+			continue
+		}
+		n := 1
+		if ef.Damage.Dice != "" {
+			if c.RNG == nil {
+				c.Print("That ability's damage cannot be rolled.")
+				return nil, false
+			}
+			rolled, err := dice.Roll(c.RNG, ef.Damage.Dice)
+			if err != nil {
+				c.Print("That ability's damage cannot be rolled.")
+				return nil, false
+			}
+			if rolled < 0 {
+				rolled = 0
+			}
+			n = rolled
+		}
+		res := ef.Damage.Resource
+		if res == "" && c.Pack != nil {
+			res = c.Pack.RPG.Primary()
+		}
+		out = append(out, rolledDamage{res: res, n: n})
+	}
+	return out, true
+}
+
+func applyAbilityDamage(c *Context, tgt *world.Entity, res string, n int) {
+	if tgt == nil || c.Actor == nil {
+		return
+	}
+	if n < 0 {
+		n = 0
+	}
+	primary := "hp"
+	if c.Pack != nil {
+		if p := c.Pack.RPG.Primary(); p != "" {
+			primary = p
+		}
+	}
+	if res == "" {
+		res = primary
+	}
+	fighter := tgt.ID != c.Actor.ID && (tgt.Kind == world.KindMobile || tgt.Kind == world.KindPlayer)
+	if fighter && res == primary {
+		openFight(c, tgt)
+		if c.Harm != nil {
+			c.Harm(tgt, n, "strike")
+			return
+		}
+	}
+	tgt.AdjustRes(res, -n)
+	if res == primary && !tgt.Alive(res) {
+		tgt.SlainBy = c.Actor.ID
+	}
+}
+
+// openFight points the actor and the target at each other and alerts a player
+// the first time that fight opens. It does not print the attacker's own line.
+func openFight(c *Context, target *world.Entity) {
+	if c == nil || c.Actor == nil || target == nil || target.ID == c.Actor.ID {
+		return
+	}
+	if target.Kind != world.KindMobile && target.Kind != world.KindPlayer {
+		return
+	}
+	every := 4
+	if c.Pack != nil && c.Pack.Meta.CombatEvery > 0 {
+		every = c.Pack.Meta.CombatEvery
+	}
+	if c.Actor.Combat == nil {
+		c.Actor.Combat = &world.Combat{RoundSpeed: every, Attacks: []world.Attack{{Name: "strike", Damage: "1d6"}}}
+	}
+	if target.Combat == nil {
+		target.Combat = &world.Combat{RoundSpeed: every, Attacks: []world.Attack{{Name: "hit", Damage: "1d4"}}}
+	}
+	opened := target.Combat.Target != c.Actor.ID
+	c.Actor.Combat.Target = target.ID
+	if c.Actor.Combat.NextSwing == 0 {
+		c.Actor.Combat.NextSwing = c.Tick + 1
+	}
+	if !opened {
+		return
+	}
+	target.Combat.Target = c.Actor.ID
+	if target.Combat.NextSwing == 0 {
+		target.Combat.NextSwing = c.Tick + 1
+	}
+	if target.Kind == world.KindPlayer && c.TellPlayer != nil {
+		c.TellPlayer(target, protocol.ChanAlert, fmt.Sprintf("%s attacks you!", c.Actor.CapDisplay()))
+	}
+}
+
+func abilityIsHostile(a *rpg.Ability) bool {
+	if a == nil {
+		return false
+	}
+	for _, ef := range a.Effects {
+		if ef.Damage != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func doorTarget(c *Context, rest string) (room *world.Entity, dir string, ex world.Exit, ok bool) {
@@ -1110,8 +1250,10 @@ func kill(c *Context, p Parsed) {
 		return
 	}
 	if e.Kind == world.KindPlayer {
-		c.Print("You cannot attack other players here.")
-		return
+		if room := c.World.RoomOf(c.Actor); room == nil || !room.HasFlag("pvp") {
+			c.Print("You cannot attack other players here.")
+			return
+		}
 	}
 	if c.Actor.Combat == nil {
 		c.Actor.Combat = &world.Combat{RoundSpeed: c.Pack.Meta.CombatEvery, Attacks: []world.Attack{{Name: "strike", Damage: "1d6"}}}
@@ -1128,6 +1270,9 @@ func kill(c *Context, p Parsed) {
 	if opened {
 		e.Combat.Target = c.Actor.ID
 		e.Combat.NextSwing = c.Tick + 1
+		if e.Kind == world.KindPlayer && c.TellPlayer != nil {
+			c.TellPlayer(e, protocol.ChanAlert, fmt.Sprintf("%s attacks you!", c.Actor.CapDisplay()))
+		}
 	}
 	c.Print("You attack %s!", e.Display())
 }
@@ -1751,6 +1896,130 @@ func tellCmd(c *Context, p Parsed) {
 		c.TellPlayer(target, protocol.ChanSay, fmt.Sprintf("%s tells you, \"%s\"", c.Actor.CapDisplay(), message))
 	}
 	c.Say("You tell %s, \"%s\"", target.CapDisplay(), message)
+}
+
+func whisperCmd(c *Context, p Parsed) {
+	if len(p.Args) < 1 {
+		c.Print("Whisper to whom? Usage: whisper <player> <message>")
+		return
+	}
+	targetName := p.Args[0]
+	message := strings.TrimSpace(p.Rest[len(targetName):])
+	if message == "" {
+		c.Print("What do you want to whisper to %s?", targetName)
+		return
+	}
+
+	if strings.EqualFold(targetName, "me") || strings.EqualFold(targetName, "self") || (c.Actor != nil && strings.EqualFold(targetName, c.Actor.Name)) {
+		c.Print("Whispering to yourself?")
+		return
+	}
+
+	room := c.World.RoomOf(c.Actor)
+	if room == nil {
+		c.Print("You don't see %q here.", targetName)
+		return
+	}
+
+	var exacts []*world.Entity
+	var keywords []*world.Entity
+	for _, e := range c.World.Children(room.ID) {
+		if e == nil || e.Kind != world.KindPlayer || (c.Actor != nil && e.ID == c.Actor.ID) {
+			continue
+		}
+		if strings.EqualFold(e.Name, targetName) || strings.EqualFold(string(e.ID), targetName) {
+			exacts = append(exacts, e)
+			continue
+		}
+		if e.HasFlag("linkdead") {
+			continue
+		}
+		if e.HasKeyword(targetName) {
+			keywords = append(keywords, e)
+		}
+	}
+	var target *world.Entity
+	if len(exacts) > 1 {
+		c.Print("More than one player matches.")
+		return
+	}
+	if len(exacts) == 1 {
+		target = exacts[0]
+		if target.HasFlag("linkdead") || !whisperLive(c, target) {
+			c.Print("You don't see %q here.", targetName)
+			return
+		}
+	} else {
+		if len(keywords) == 0 {
+			c.Print("You don't see %q here.", targetName)
+			return
+		}
+		if len(keywords) > 1 {
+			c.Print("More than one player matches.")
+			return
+		}
+		target = keywords[0]
+		if !whisperLive(c, target) {
+			c.Print("You don't see %q here.", targetName)
+			return
+		}
+	}
+
+	if c.TellPlayer != nil {
+		c.TellPlayer(target, protocol.ChanSay, fmt.Sprintf("%s whispers to you, \"%s\"", c.Actor.CapDisplay(), message))
+	}
+	c.Say("You whisper to %s, \"%s\"", target.CapDisplay(), message)
+}
+
+func shoutCmd(c *Context, p Parsed) {
+	text := strings.TrimSpace(p.Rest)
+	if text == "" {
+		c.Print("Shout what? Usage: shout <message>")
+		return
+	}
+	c.Say("You shout, \"%s\"", text)
+	room := c.World.RoomOf(c.Actor)
+	if room == nil {
+		return
+	}
+	line := fmt.Sprintf("%s shouts, \"%s\"", c.Actor.CapDisplay(), text)
+	if c.TellRoom != nil {
+		c.TellRoom(room, protocol.ChanSay, line, c.Actor)
+		seen := map[world.ID]bool{room.ID: true}
+		for _, ex := range room.Exits {
+			if ex.Closed || ex.Locked || ex.To == "" || seen[ex.To] {
+				continue
+			}
+			seen[ex.To] = true
+			adj := c.World.Get(ex.To)
+			if adj != nil && adj.Kind == world.KindRoom && adj.Outdoor() {
+				c.TellRoom(adj, protocol.ChanSay, line, c.Actor)
+			}
+		}
+	}
+}
+
+func passwordCmd(c *Context, _ Parsed) {
+	if c.ChangePassword == nil {
+		c.Print("Password changes are only available when logged into a persistent server.")
+		return
+	}
+	c.System("Type password and press enter. You will be asked for the current and new passwords.")
+}
+
+func whisperLive(c *Context, target *world.Entity) bool {
+	if target == nil {
+		return false
+	}
+	if c == nil || c.ConnectedPlayers == nil {
+		return !target.HasFlag("linkdead")
+	}
+	for _, cp := range c.ConnectedPlayers() {
+		if cp != nil && cp.ID == target.ID {
+			return true
+		}
+	}
+	return false
 }
 
 func connectedMatch(c *Context, token string) (*world.Entity, int) {
@@ -3402,6 +3671,9 @@ func showParty(c *Context) {
 		if m.ID == leaderID {
 			roleBadge = " [Leader]"
 		}
+		if m.HasFlag("linkdead") {
+			roleBadge += " [linkdead]"
+		}
 		resStr := ""
 		if c.Pack != nil && len(m.Resources) > 0 {
 			key := c.Pack.RPG.Primary()
@@ -3421,7 +3693,11 @@ func showParty(c *Context) {
 			}
 			loyaltyStr = fmt.Sprintf(" (Loyalty: %d/%d)", m.Loyalty, maxL)
 		}
-		c.Print("  %s (Lvl %d)%s%s%s%s", m.Display(), m.Level, roleBadge, resStr, stanceStr, loyaltyStr)
+		locStr := ""
+		if rm := c.World.RoomOf(m); rm != nil && rm.Name != "" {
+			locStr = fmt.Sprintf(" — %s", rm.Name)
+		}
+		c.Print("  %s (Lvl %d)%s%s%s%s%s", m.Display(), m.Level, roleBadge, resStr, stanceStr, loyaltyStr, locStr)
 	}
 
 	var extraFollowers []*world.Entity
@@ -3827,6 +4103,12 @@ func orderCmd(c *Context, p Parsed) {
 		if target.ID == pet.ID || target.ID == c.Actor.ID {
 			c.Print("%s refuses to attack that.", pet.CapDisplay())
 			return
+		}
+		if target.Kind == world.KindPlayer {
+			if room := c.World.RoomOf(c.Actor); room == nil || !room.HasFlag("pvp") {
+				c.Print("You cannot attack other players here.")
+				return
+			}
 		}
 		every := 4
 		if c.Pack != nil && c.Pack.Meta.CombatEvery > 0 {

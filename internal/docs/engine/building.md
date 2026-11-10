@@ -55,7 +55,7 @@ games/<id>/
     west: { to: house.foyer }
 ```
 
-Doors: `door: true`, `locked: true`, `key: house.cellar-key`. Dark rooms: `flags: [dark]` — the player needs a light (`use lamp`).
+Doors: `door: true`, `locked: true`, `key: house.cellar-key`. Dark rooms: `flags: [dark]` — the player needs a light (`use lamp`). Arena / PvP rooms: `flags: [pvp]` allows players to attack other players in that room.
 
 Weather flags, when the pack turns the clock or the sky on: `outdoor` (or `outdoors`) hears the open-air lines. `windowed` (or `sheltered`) hears the quieter lines and, at time scale 2, lets daylight into a dark room. `underground` ignores the sky. `lit` keeps an outdoor room bright at night. See `help systems`.
 
@@ -159,7 +159,7 @@ buildwalk             walking into a void digs
 name <title>          set current room title
 desc                  then type lines, end with .
 desc <one line>       set room description directly
-rflags dark           toggle room flags (dark, outdoor, lit, underground, windowed)
+rflags dark           toggle room flags (dark, outdoor, lit, underground, windowed, pvp)
 extra add portrait | The eyes follow you.
 proto item lamp a brass lamp
 proto npc rat a rat

@@ -60,7 +60,9 @@ You need the matching key in inventory to lock or unlock.
 ```
 say <text>           or  'text
 emote <text>         or  :text
-tell <who> <text>    private message to a player
+whisper <who> <text> private message to one connected player in the same room
+tell <who> <text>    private message to a connected player anywhere
+shout / yell <text>  shout to the room and adjacent outdoor rooms
 gossip / ooc <text>  broadcast message to all connected players
 who                  list connected players, roles, and vitals
 ask <who> about <topic>
@@ -73,7 +75,7 @@ talk <who>            list topics they might know
 follow / fol [who]       follow someone or check who you follow and who follows you
 unfollow / unfol         stop following your leader
 lose / ditch / shake <who> shake off someone following you
-group / party            display active party members, health, and status
+group / party            display active party members, health, status, and room
 party invite|join|leave|disband|disown
                        same as group
 party <text>             talk to party members across rooms
@@ -134,9 +136,16 @@ equipment
 improve <skill>
 raise <attribute>
 train <skill>
+password / passwd
 save [slot]
 quit
 ```
+
+Type `password` and press enter. The game asks for the current password and the new one without showing them. Spaces are allowed. On the launcher, every saved bookmark for that account is updated.
+
+`whisper` uses an exact name or id first. That person is refused when they are link-dead. A shorter name matches only someone still connected.
+
+`shout` also reaches one outdoor room away. A closed or locked exit does not carry it.
 
 ## Building (build mode only)
 

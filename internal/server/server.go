@@ -46,7 +46,13 @@ type Session struct {
 	inflight     int
 	monitored    bool
 	pumpStop     chan struct{}
+	pwBusy       bool
+	pwRetry      time.Time
 }
+
+// passwordRetryAfter is how long a session waits after a failed password check
+// before another bcrypt compare is started.
+const passwordRetryAfter = 2 * time.Second
 
 // MaxQueuedCommands matches the local input buffer. A framed client must not
 // grow the per-session queue without a bound.
@@ -307,6 +313,13 @@ type DisconnectMsg struct {
 }
 
 func (DisconnectMsg) isServerMsg() {}
+
+type passwordResultMsg struct {
+	Session *Session
+	Err     error
+}
+
+func (passwordResultMsg) isServerMsg() {}
 
 type Server struct {
 	Pack          *pack.Pack
@@ -979,7 +992,7 @@ func newServerInstance(p *pack.Pack, w *world.World, seed int64) *Server {
 		srv.sendRoom(room, skip, protocol.TextEvent{Channel: protocol.ChanNarrative, Text: text})
 	}
 	h.Damage = func(att, def *world.Entity, amount int) {
-		srv.Combat.Damage(w, att, def, amount, "strike")
+		srv.harmEntity(att, def, amount, "strike")
 	}
 	h.Move = srv.moveEntity
 	return srv
@@ -1114,6 +1127,8 @@ func (s *Server) handleServerMsg(msg ServerMsg) {
 		if !m.Session.EnqueueCommand(m.Line) {
 			m.Session.finishCommand()
 		}
+	case passwordResultMsg:
+		s.finishPasswordChange(m.Session, m.Err)
 	}
 }
 
@@ -1387,6 +1402,21 @@ func (s *Server) ctx(session ...*Session) *commands.Context {
 			}
 		},
 		Quit: func() { sess.quit = true },
+		ChangePassword: func() func(oldPass, newPass string) error {
+			if sess.Account == "" || s.Pack == nil || s.Pack.Meta.ID == "" {
+				return nil
+			}
+			return func(oldPass, newPass string) error {
+				s.startPasswordChange(sess, oldPass, newPass)
+				return nil
+			}
+		}(),
+		Harm: func(target *world.Entity, amount int, verb string) {
+			if target == nil || actor == nil || s.Combat == nil {
+				return
+			}
+			s.Combat.Damage(s.World, actor, target, amount, verb)
+		},
 		SaveSnap: func(slot string) error {
 			if s.Persist || sess.Persist {
 				if slot == "autosave" && actor != nil && actor.InCombat() {
@@ -1475,6 +1505,105 @@ func (s *Server) handle(line string) {
 	s.handleSession(s.Session, line)
 }
 
+// harmEntity applies script damage. Player-versus-player damage is refused
+// unless the attacker's room allows pvp, and a new fight alerts the defender.
+func (s *Server) harmEntity(att, def *world.Entity, amount int, verb string) {
+	if s == nil || s.Combat == nil || def == nil {
+		return
+	}
+	if amount < 0 {
+		amount = 0
+	}
+	playerFight := att != nil && att.ID != def.ID && att.Kind == world.KindPlayer &&
+		(def.Kind == world.KindPlayer || def.Kind == world.KindMobile)
+	if playerFight && def.Kind == world.KindPlayer {
+		room := s.World.RoomOf(att)
+		if room == nil || !room.HasFlag("pvp") {
+			s.sendTo(att, protocol.TextEvent{
+				Channel: protocol.ChanNarrative,
+				Text:    "You cannot attack other players here.",
+			})
+			return
+		}
+	}
+	if playerFight {
+		already := def.Combat != nil && def.Combat.Target == att.ID
+		if !already && def.Kind == world.KindPlayer {
+			s.sendTo(def, protocol.TextEvent{
+				Channel: protocol.ChanAlert,
+				Text:    fmt.Sprintf("%s attacks you!", att.CapDisplay()),
+			})
+		}
+		if !already {
+			s.Combat.Start(att, def, s.World.Tick)
+		}
+	}
+	s.Combat.Damage(s.World, att, def, amount, verb)
+}
+
+func (s *Server) startPasswordChange(sess *Session, oldPass, newPass string) {
+	if s == nil || sess == nil {
+		return
+	}
+	if sess.Account == "" || s.Pack == nil || s.Pack.Meta.ID == "" {
+		sess.Send(protocol.TextEvent{
+			Channel: protocol.ChanSystem,
+			Text:    "Password changes are only available when logged into a persistent server.",
+		})
+		return
+	}
+	oldPass = strings.TrimSpace(oldPass)
+	newPass = strings.TrimSpace(newPass)
+	if oldPass == "" || newPass == "" {
+		sess.Send(protocol.TextEvent{
+			Channel: protocol.ChanSystem,
+			Text:    "Password change failed: password cannot be empty.",
+		})
+		return
+	}
+	if sess.pwBusy {
+		sess.Send(protocol.TextEvent{
+			Channel: protocol.ChanSystem,
+			Text:    "A password change is already running.",
+		})
+		return
+	}
+	if time.Now().Before(sess.pwRetry) {
+		sess.Send(protocol.TextEvent{
+			Channel: protocol.ChanSystem,
+			Text:    "Wait a moment before trying another password.",
+		})
+		return
+	}
+	sess.pwBusy = true
+	packID := s.Pack.Meta.ID
+	account := sess.Account
+	go func() {
+		err := save.ChangePassword(packID, account, oldPass, newPass)
+		s.enqueueMsg(passwordResultMsg{Session: sess, Err: err})
+	}()
+}
+
+func (s *Server) finishPasswordChange(sess *Session, err error) {
+	if sess != nil {
+		sess.pwBusy = false
+		if err != nil {
+			sess.pwRetry = time.Now().Add(passwordRetryAfter)
+		}
+	}
+	if sess == nil {
+		return
+	}
+	if err != nil {
+		sess.Send(protocol.TextEvent{
+			Channel: protocol.ChanSystem,
+			Text:    "Password change failed: " + err.Error(),
+		})
+		return
+	}
+	sess.Send(protocol.TextEvent{Channel: protocol.ChanSystem, Text: protocol.PasswordUpdated})
+}
+
 func (s *Server) handleSession(sess *Session, line string) {
 	if sess == nil {
 		return
@@ -1501,6 +1630,11 @@ func (s *Server) handleSession(sess *Session, line string) {
 	line = strings.TrimSpace(line)
 	c := s.ctx(sess)
 	if line == "" {
+		s.pushUI(sess)
+		return
+	}
+	if oldPass, newPass, ok := protocol.DecodePasswordChange(line); ok {
+		s.startPasswordChange(sess, oldPass, newPass)
 		s.pushUI(sess)
 		return
 	}

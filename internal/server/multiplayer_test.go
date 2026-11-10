@@ -1,12 +1,15 @@
 package server_test
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"sudengine/internal/protocol"
 	"sudengine/internal/quest"
+	"sudengine/internal/rpg"
 	"sudengine/internal/save"
 	"sudengine/internal/server"
 	"sudengine/internal/world"
@@ -962,3 +965,421 @@ func TestStage5PartyKillCreditAndXPInSameRoomOnly(t *testing.T) {
 	}
 }
 
+func TestWhisperSameRoomOnly(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, adaSess, err := server.Launch(server.Options{
+		PackDir:    dir,
+		Mode:       protocol.ModePlay,
+		Seed:       1,
+		PlayerName: "Ada",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobSess, _ := srv.SpawnPlayerSession("Bob", "", "")
+	caraSess, cara := srv.SpawnPlayerSession("Cara", "", "")
+	danaSess, dana := srv.SpawnPlayerSession("Dana", "", "")
+	_ = srv.World.Move(dana.ID, "house.foyer")
+
+	_ = drainEvents(adaSess)
+	_ = drainEvents(bobSess)
+	_ = drainEvents(caraSess)
+	_ = drainEvents(danaSess)
+
+	// Ada whispers to Bob in the same room; Cara (also in the room) must not hear it.
+	adaEvs := filterTextEvents(srv.HandleSessionLine(adaSess, "whisper Bob keep it down"))
+	bobEvs := filterTextEvents(drainEvents(bobSess))
+	caraEvs := filterTextEvents(drainEvents(caraSess))
+
+	foundAda := false
+	for _, te := range adaEvs {
+		if te.Channel == protocol.ChanSay && te.Text == `You whisper to Bob, "keep it down"` {
+			foundAda = true
+		}
+	}
+	if !foundAda {
+		t.Fatalf("expected Ada to see her whisper, got: %v", adaEvs)
+	}
+
+	foundBob := false
+	for _, te := range bobEvs {
+		if te.Channel == protocol.ChanSay && te.Text == `Ada whispers to you, "keep it down"` {
+			foundBob = true
+		}
+	}
+	if !foundBob {
+		t.Fatalf("expected Bob to receive whisper on ChanSay, got: %v", bobEvs)
+	}
+
+	for _, te := range caraEvs {
+		if strings.Contains(te.Text, "keep it down") || strings.Contains(te.Text, "whisper") {
+			t.Fatalf("Cara in the same room should not hear a private whisper, got: %v", te)
+		}
+	}
+
+	// Whispering to Dana (in another room) is refused.
+	refuseEvs := filterTextEvents(srv.HandleSessionLine(adaSess, "whisper Dana hello"))
+	foundRefuse := false
+	for _, te := range refuseEvs {
+		if strings.Contains(te.Text, "don't see") {
+			foundRefuse = true
+		}
+	}
+	if !foundRefuse {
+		t.Fatalf("expected whisper across rooms to fail, got: %v", refuseEvs)
+	}
+	_ = cara
+}
+
+func TestShoutReachesRoomAndAdjacentOutdoorRoomsOnly(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "green-hollow")
+	srv, adaSess, err := server.Launch(server.Options{
+		PackDir:    dir,
+		Mode:       protocol.ModePlay,
+		Seed:       1,
+		PlayerName: "Ada",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ada is in hollow.square (outdoor).
+	// Adjacent rooms from hollow.square:
+	// - east: hollow.lane (outdoor)
+	// - south: hollow.cottage (windowed/indoor, not outdoor)
+	// Two steps away: hollow.thicket (north of hollow.lane, outdoor).
+	bobSess, _ := srv.SpawnPlayerSession("Bob", "", "")
+	caraSess, cara := srv.SpawnPlayerSession("Cara", "", "")
+	danaSess, dana := srv.SpawnPlayerSession("Dana", "", "")
+	eliSess, eli := srv.SpawnPlayerSession("Eli", "", "")
+
+	_ = srv.World.Move(cara.ID, "hollow.lane")
+	_ = srv.World.Move(dana.ID, "hollow.cottage")
+	_ = srv.World.Move(eli.ID, "hollow.thicket")
+
+	_ = drainEvents(adaSess)
+	_ = drainEvents(bobSess)
+	_ = drainEvents(caraSess)
+	_ = drainEvents(danaSess)
+	_ = drainEvents(eliSess)
+
+	adaEvs := filterTextEvents(srv.HandleSessionLine(adaSess, "yell Watch out for wolves!"))
+	bobEvs := filterTextEvents(drainEvents(bobSess))
+	caraEvs := filterTextEvents(drainEvents(caraSess))
+	danaEvs := filterTextEvents(drainEvents(danaSess))
+	eliEvs := filterTextEvents(drainEvents(eliSess))
+
+	foundAda := false
+	for _, te := range adaEvs {
+		if te.Channel == protocol.ChanSay && te.Text == `You shout, "Watch out for wolves!"` {
+			foundAda = true
+		}
+	}
+	if !foundAda {
+		t.Fatalf("expected Ada to see her shout, got: %v", adaEvs)
+	}
+
+	foundBob := false
+	for _, te := range bobEvs {
+		if te.Channel == protocol.ChanSay && te.Text == `Ada shouts, "Watch out for wolves!"` {
+			foundBob = true
+		}
+	}
+	if !foundBob {
+		t.Fatalf("expected Bob in same room to hear shout, got: %v", bobEvs)
+	}
+
+	foundCara := false
+	for _, te := range caraEvs {
+		if te.Channel == protocol.ChanSay && te.Text == `Ada shouts, "Watch out for wolves!"` {
+			foundCara = true
+		}
+	}
+	if !foundCara {
+		t.Fatalf("expected Cara in adjacent outdoor room (hollow.lane) to hear shout, got: %v", caraEvs)
+	}
+
+	for _, te := range danaEvs {
+		if strings.Contains(te.Text, "Watch out for wolves!") {
+			t.Fatalf("expected Dana in adjacent indoor room (hollow.cottage) NOT to hear shout, got: %v", te)
+		}
+	}
+	for _, te := range eliEvs {
+		if strings.Contains(te.Text, "Watch out for wolves!") {
+			t.Fatalf("expected Eli two rooms away (hollow.thicket) NOT to hear shout, got: %v", te)
+		}
+	}
+}
+
+func TestRoomPvPFlagControlsPlayerCombat(t *testing.T) {
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, adaSess, err := server.Launch(server.Options{
+		PackDir:    dir,
+		Mode:       protocol.ModePlay,
+		Seed:       1,
+		PlayerName: "Ada",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ada := srv.World.Get(adaSess.PlayerID)
+	bobSess, bob := srv.SpawnPlayerSession("Bob", "", "")
+	room := srv.World.RoomOf(ada)
+
+	// 1. Default room without pvp flag refuses kill <player>.
+	evs := filterTextEvents(srv.HandleSessionLine(adaSess, "kill Bob"))
+	refused := false
+	for _, te := range evs {
+		if te.Text == "You cannot attack other players here." {
+			refused = true
+		}
+	}
+	if !refused || ada.InCombat() || bob.InCombat() {
+		t.Fatalf("expected non-pvp room to refuse player attack, got: %v", evs)
+	}
+
+	// 2. Enable pvp flag on room and verify kill <player> starts combat and swings on tick.
+	room.SetFlag("pvp", true)
+	_ = drainEvents(adaSess)
+	_ = drainEvents(bobSess)
+
+	evs = filterTextEvents(srv.HandleSessionLine(adaSess, "kill Bob"))
+	attacked := false
+	for _, te := range evs {
+		if te.Text == "You attack Bob!" {
+			attacked = true
+		}
+	}
+	if !attacked || !ada.InCombat() || !bob.InCombat() {
+		t.Fatalf("expected pvp room to allow player attack, got: %v", evs)
+	}
+
+	bobAlertEvs := filterTextEvents(drainEvents(bobSess))
+	gotAlert := false
+	for _, te := range bobAlertEvs {
+		if te.Channel == protocol.ChanAlert && te.Text == "Ada attacks you!" {
+			gotAlert = true
+		}
+	}
+	if !gotAlert {
+		t.Fatalf("expected Bob to receive 'Ada attacks you!' alert, got: %v", bobAlertEvs)
+	}
+
+	primary := srv.Pack.RPG.Primary()
+	room.SetFlag("pvp", false)
+	ada.Combat = nil
+	bob.Combat = nil
+	before := bob.Res(primary).Current
+	_ = drainEvents(adaSess)
+	_ = drainEvents(bobSess)
+	srv.Scripts.Damage(ada, bob, 4)
+	scriptEvs := filterTextEvents(drainEvents(adaSess))
+	refusedScript := false
+	for _, te := range scriptEvs {
+		if te.Text == "You cannot attack other players here." {
+			refusedScript = true
+		}
+	}
+	if !refusedScript || bob.Res(primary).Current != before {
+		t.Fatalf("script damage bypassed pvp, hp %d->%d, events %v", before, bob.Res(primary).Current, scriptEvs)
+	}
+
+	srv.Pack.RPG.Abilities = append(srv.Pack.RPG.Abilities, rpg.Ability{
+		ID: "zap", Name: "Zap", Verb: "zap", Target: "any",
+		Effects: []rpg.Effect{{Damage: &rpg.ResDice{Dice: "nope"}}},
+	})
+	room.SetFlag("pvp", true)
+	bad := filterTextEvents(srv.HandleSessionLine(adaSess, "zap Bob"))
+	badText := false
+	for _, te := range bad {
+		if strings.Contains(te.Text, "cannot be rolled") {
+			badText = true
+		}
+	}
+	if !badText || bob.Res(primary).Current != before {
+		t.Fatalf("bad ability dice still dealt damage, hp %d, events %v", bob.Res(primary).Current, bad)
+	}
+
+	zap := &srv.Pack.RPG.Abilities[len(srv.Pack.RPG.Abilities)-1]
+	zap.Effects[0].Damage.Dice = "5"
+	_ = drainEvents(bobSess)
+	hit := filterTextEvents(srv.HandleSessionLine(adaSess, "zap Bob"))
+	struck := false
+	for _, te := range hit {
+		if te.Text == "You strike Bob for 5." {
+			struck = true
+		}
+	}
+	bobHit := filterTextEvents(drainEvents(bobSess))
+	alerted := false
+	for _, te := range bobHit {
+		if te.Channel == protocol.ChanAlert && te.Text == "Ada attacks you!" {
+			alerted = true
+		}
+	}
+	if !struck || !alerted || bob.Res(primary).Current != before-5 {
+		t.Fatalf("ability damage hp %d->%d struck %v alert %v ada %v bob %v", before, bob.Res(primary).Current, struck, alerted, hit, bobHit)
+	}
+
+	zap.Effects[0].Damage.Dice = "1-10"
+	held := bob.Res(primary).Current
+	_ = srv.HandleSessionLine(adaSess, "zap Bob")
+	if bob.Res(primary).Current != held {
+		t.Fatalf("negative ability roll changed hp from %d to %d", held, bob.Res(primary).Current)
+	}
+	srv.Scripts.Damage(ada, bob, -8)
+	if bob.Res(primary).Current != held {
+		t.Fatalf("negative script damage healed bob from %d to %d", held, bob.Res(primary).Current)
+	}
+}
+
+func TestPartyRosterShowsLocationAndLinkdeadAndPasswordChange(t *testing.T) {
+	origRoot := save.Root
+	save.Root = t.TempDir()
+	defer func() { save.Root = origRoot }()
+
+	origCost := save.BcryptCost
+	save.BcryptCost = 4
+	defer func() { save.BcryptCost = origCost }()
+
+	dir := filepath.Join("..", "..", "games", "old-house")
+	srv, err := server.LaunchServer(server.Options{
+		PackDir: dir,
+		Mode:    protocol.ModePlay,
+		Persist: true,
+		TickMS:  20,
+		Seed:    1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := save.CreateAccount("old-house", "alice", "oldpass"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := save.CreateAccount("old-house", "bob", "bobpass"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.Run(ctx)
+
+	adaSess := &server.Session{
+		Account: "alice",
+		Persist: true,
+		Out:     make(chan protocol.Event, 128),
+		In:      make(chan string, 32),
+	}
+	bobSess := &server.Session{
+		Account: "bob",
+		Persist: true,
+		Out:     make(chan protocol.Event, 128),
+		In:      make(chan string, 32),
+	}
+
+	srv.EnqueueConnectChar(server.ConnectMsg{Session: adaSess, Account: "alice", Persist: true, Name: "Ada", Role: "reckless"})
+	srv.EnqueueConnectChar(server.ConnectMsg{Session: bobSess, Account: "bob", Persist: true, Name: "Bob", Role: "careful"})
+
+	waitRoom := func(s *server.Session) {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			s.Flush()
+			select {
+			case ev := <-s.Out:
+				if _, ok := ev.(protocol.RoomEvent); ok {
+					return
+				}
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		t.Fatalf("timed out waiting for room")
+	}
+	waitRoom(adaSess)
+	waitRoom(bobSess)
+
+	waitText := func(s *server.Session, sub string) string {
+		var out string
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) && !strings.Contains(out, sub) {
+			s.Flush()
+			select {
+			case ev := <-s.Out:
+				if te, ok := ev.(protocol.TextEvent); ok {
+					out += te.Text + "\n"
+				}
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		return out
+	}
+
+	// Form party and disconnect Bob so he goes linkdead.
+	srv.Enqueue(adaSess, "invite Bob")
+	_ = waitText(adaSess, "You invite Bob")
+	srv.Enqueue(bobSess, "join Ada")
+	_ = waitText(bobSess, "You have joined Ada's party")
+	srv.EnqueueDisconnect(bobSess, "closed")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !bobSess.Closed() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !bobSess.Closed() {
+		t.Fatal("timed out waiting for Bob's session to close")
+	}
+
+	_ = drainEvents(adaSess)
+	srv.Enqueue(adaSess, "party")
+	partyOut := waitText(adaSess, "[linkdead]")
+	if !strings.Contains(partyOut, "Front Porch") || !strings.Contains(partyOut, "[linkdead]") {
+		t.Fatalf("expected party roster to show room title 'Front Porch' and '[linkdead]', got:\n%s", partyOut)
+	}
+
+	// A password typed on the command line is not applied.
+	_ = drainEvents(adaSess)
+	srv.Enqueue(adaSess, "password oldpass newpass456")
+	hint := waitText(adaSess, "asked for the current")
+	if !strings.Contains(hint, "asked for the current") || strings.Contains(hint, "Password updated.") {
+		t.Fatalf("expected the password command to refuse inline secrets, got:\n%s", hint)
+	}
+	if _, err := save.AuthenticateAccount("old-house", "alice", "oldpass"); err != nil {
+		t.Fatalf("inline password command changed the account: %v", err)
+	}
+
+	encoded, err := protocol.EncodePasswordChange("oldpass", "new secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = drainEvents(adaSess)
+	srv.Enqueue(adaSess, encoded)
+	pwOut := waitText(adaSess, "Password updated.")
+	if !strings.Contains(pwOut, "Password updated.") {
+		t.Fatalf("expected 'Password updated.', got:\n%s", pwOut)
+	}
+	if _, err := save.AuthenticateAccount("old-house", "alice", "new secret"); err != nil {
+		t.Fatalf("expected new password to authenticate: %v", err)
+	}
+
+	encoded, err = protocol.EncodePasswordChange("wrong", "third")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = drainEvents(adaSess)
+	srv.Enqueue(adaSess, encoded)
+	failed := waitText(adaSess, "Password change failed")
+	if !strings.Contains(failed, "Password change failed") {
+		t.Fatalf("expected a bad password to fail, got:\n%s", failed)
+	}
+	encoded, err = protocol.EncodePasswordChange("new secret", "third")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = drainEvents(adaSess)
+	srv.Enqueue(adaSess, encoded)
+	waited := waitText(adaSess, "Wait a moment")
+	if !strings.Contains(waited, "Wait a moment") {
+		t.Fatalf("expected a backoff after a failed password check, got:\n%s", waited)
+	}
+	if _, err := save.AuthenticateAccount("old-house", "alice", "new secret"); err != nil {
+		t.Fatalf("backoff attempt changed the account: %v", err)
+	}
+}

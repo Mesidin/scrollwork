@@ -107,6 +107,11 @@ type Model struct {
 	cgRole int
 
 	theme *theme.Palette
+
+	pwStep    int
+	pwOld     string
+	pwPending string
+	pwPrompt  string
 }
 
 func New(gamesDir string) Model {
@@ -281,6 +286,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pendingConn != nil && !m.remoteJoined && msg.Text != "" {
 			m.remoteNotice = msg.Text
 		}
+		m = m.notePasswordUpdated(msg)
 		m.appendChan(msg.Channel, msg.Text)
 		return m, waitEvent(m.sess)
 	case protocol.PromptEvent:
@@ -442,6 +448,9 @@ func (m Model) startGame(opt server.Options) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateGameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.pwStep != 0 {
+		return m.updatePasswordKey(msg)
+	}
 	switch msg.String() {
 	case "ctrl+c":
 		if m.sess != nil {
@@ -459,6 +468,9 @@ func (m Model) updateGameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.input.Reset()
 		if line == "" {
 			return m, nil
+		}
+		if next, handled := m.interceptPassword(line); handled {
+			return next, nil
 		}
 		m.history = append(m.history, line)
 		m.histIdx = len(m.history)
@@ -500,6 +512,142 @@ func (m Model) updateGameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+func (m Model) interceptPassword(line string) (Model, bool) {
+	if protocol.IsPasswordChange(line) {
+		m.appendChan(protocol.ChanSystem, "Type password and press enter. You will be asked for the current and new passwords.")
+		return m, true
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return m, false
+	}
+	verb := strings.ToLower(fields[0])
+	if verb != "password" && verb != "passwd" {
+		return m, false
+	}
+	m.appendChan(protocol.ChanSystem, "> password")
+	if len(fields) > 1 {
+		m.appendChan(protocol.ChanSystem, "Type password and press enter. You will be asked for the current and new passwords.")
+		return m, true
+	}
+	if m.pwPending != "" {
+		m.appendChan(protocol.ChanSystem, "A password change is already in progress.")
+		return m, true
+	}
+	if m.sess != nil && m.sess.Account != "" {
+		m.pwPrompt = m.input.Prompt
+		m.pwStep = 1
+		m.pwOld = ""
+		m.input.EchoMode = textinput.EchoPassword
+		m.input.Prompt = "Current password: "
+		m.input.Placeholder = ""
+		m.input.Reset()
+		return m, true
+	}
+	if m.sess != nil {
+		m.sess.In <- "password"
+	}
+	return m, true
+}
+
+func (m Model) updatePasswordKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.pwOld = ""
+		m.pwStep = 0
+		if m.sess != nil {
+			select {
+			case m.sess.In <- "quit":
+			default:
+			}
+		}
+		if m.cancel != nil {
+			m.cancel()
+		}
+		return m, tea.Quit
+	case "esc":
+		m = m.endPasswordPrompt()
+		m.appendChan(protocol.ChanSystem, "Password change cancelled.")
+		return m, nil
+	case "enter":
+		value := strings.TrimSpace(m.input.Value())
+		m.input.Reset()
+		if value == "" {
+			m.appendChan(protocol.ChanSystem, "Password cannot be empty.")
+			return m, nil
+		}
+		if m.pwStep == 1 {
+			m.pwOld = value
+			m.pwStep = 2
+			m.input.Prompt = "New password: "
+			return m, nil
+		}
+		old := m.pwOld
+		m = m.endPasswordPrompt()
+		encoded, err := protocol.EncodePasswordChange(old, value)
+		if err != nil || m.sess == nil {
+			m.appendChan(protocol.ChanSystem, "Password change failed.")
+			return m, nil
+		}
+		m.pwPending = value
+		m.sess.In <- encoded
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m Model) endPasswordPrompt() Model {
+	m.pwStep = 0
+	m.pwOld = ""
+	m.input.EchoMode = textinput.EchoNormal
+	if m.pwPrompt != "" {
+		m.input.Prompt = m.pwPrompt
+	} else {
+		m.input.Prompt = "> "
+	}
+	m.input.Placeholder = "look, n, get lamp..."
+	m.input.Reset()
+	return m
+}
+
+func (m Model) notePasswordUpdated(msg protocol.TextEvent) Model {
+	if m.pwPending == "" || msg.Channel != protocol.ChanSystem {
+		return m
+	}
+	if msg.Text == protocol.PasswordUpdated {
+		next := m.pwPending
+		m.pwPending = ""
+		m.rlPassword = next
+		account := m.rlAccount
+		if m.sess != nil && m.sess.Account != "" {
+			account = m.sess.Account
+		}
+		if account == "" {
+			return m
+		}
+		_ = save.UpdateConnectionPasswords(account, next)
+		for i := range m.savedConns {
+			if strings.EqualFold(strings.TrimSpace(m.savedConns[i].Account), account) {
+				m.savedConns[i].Password = next
+			}
+		}
+		if m.pendingConn != nil && strings.EqualFold(strings.TrimSpace(m.pendingConn.Account), account) {
+			m.pendingConn.Password = next
+		}
+		return m
+	}
+	switch {
+	case strings.HasPrefix(msg.Text, "Password change failed"),
+		strings.HasPrefix(msg.Text, "Password changes are only"),
+		strings.HasPrefix(msg.Text, "New password cannot"),
+		strings.HasPrefix(msg.Text, "Wait a moment before trying"):
+		m.pwPending = ""
+	}
+	return m
 }
 
 func (m *Model) append(text string) {

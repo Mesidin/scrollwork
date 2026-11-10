@@ -4,10 +4,10 @@ This document records the chronological development history, verified features, 
 
 ---
 
-## Current Status (as of Nov 2, 2026)
+## Current Status (as of Nov 10, 2026)
 
-* **Engine**: Go Bubble Tea MUD engine with runtime YAML+Lua pack loading, framed TCP multiplayer (`serve`/`connect`), Telnet (`127.0.0.1:4023`), account authentication, paired atomic world/player saves, link-dead grace periods, server-side chargen checks, LAN discovery, and saved character bookmarks.
-* **Test Suite**: Connect-login review fixes passed `go test -count=1 -timeout 240s ./internal/save ./internal/net ./cmd/sudengine ./internal/server ./internal/commands ./internal/pack ./internal/client ./internal/rpg` on Nov 2, 2026. The race detector was not run (no gcc). A full `go test ./...` was not re-run in that pass.
+* **Engine**: Go Bubble Tea MUD engine with runtime YAML+Lua pack loading, framed TCP multiplayer (`serve`/`connect`), Telnet (`127.0.0.1:4023`), account authentication, paired atomic world/player saves, link-dead grace periods, server-side chargen checks, TCP + UDP LAN discovery, saved character bookmarks, `whisper` / `shout` / `password` verbs, and room-flagged `pvp` combat.
+* **Test Suite**: `go test -count=1 -timeout 300s ./internal/commands ./internal/save ./internal/protocol ./internal/client ./internal/net ./cmd/sudengine ./internal/server ./internal/pack ./internal/rpg` passed on Nov 10. The race detector was not run.
 * **Sample Packs**:
   * `games/old-house`: Core story regression pack.
   * `games/green-hollow`: Extended fantasy drill demonstrating levels, training, skills, AI, economy, quests, and companion interactions.
@@ -497,3 +497,25 @@ This document records the chronological development history, verified features, 
   * Probe, sign-in, and dial run as Bubble Tea commands with a deadline. Canceling aborts the dial. A refused character stays on the login step. The bookmark is written after the room arrives.
   * `saves/connections.json` is owner-only on Windows. Wildcard binds are rejected, known virtual adapters are skipped, and a failed LAN bind is logged.
   * `go test -count=1 -timeout 240s ./internal/save ./internal/net ./cmd/sudengine ./internal/server ./internal/commands ./internal/pack ./internal/client ./internal/rpg` passed. The race detector was not run.
+
+## Milestone 21: Post-Stage-5 Multiplayer Verbs, Room PvP & Family Server Polish (Nov 5, 2026)
+* **Post-Stage-5 Multiplayer Verbs & Room PvP (`internal/commands/commands.go`, `internal/commands/parser.go`)**:
+  * `whisper <player> <text>` (alias `whis`): private speech (`ChanSay`) delivered only to one connected player in the same room (`You whisper to <Target>, "..."` / `<Speaker> whispers to you, "..."`), never leaking to other players in the room and refusing targets in other rooms or link-dead bodies.
+  * `shout <text>` (alias `yell`): broadcasts on `ChanSay` (`You shout, "..."` / `<Speaker> shouts, "..."`) to players in the current room and players in adjacent rooms (one exit step away) that are outdoor (`adj.Outdoor()`).
+  * Room `pvp` flag: `kill <player>`, `order <pet> attack <player>`, and damaging abilities continue to refuse player targets by default (`"You cannot attack other players here."`), while rooms with the `pvp` flag (`room.HasFlag("pvp")`, toggled in OLC with `rflags pvp`) allow player-vs-player combat and alert the defender (`"<Attacker> attacks you!"` on `ChanAlert`).
+* **Family Server Polish (`internal/net/server.go`, `internal/net/client.go`, `internal/save/multiplayer.go`, `internal/commands/commands.go`)**:
+  * **UDP LAN Discovery Beacon**: Added `ListenDiscovery`, `ServeDiscovery`, and `DiscoverUDP` (default UDP port `4024`) started alongside `sudengine serve` so the TUI launcher (`DiscoverServers`) discovers LAN servers running on custom `--port` values in addition to the existing `/24` TCP port 4000 scan.
+  * **Party Roster Locations & Link-Dead Status**: Updated `showParty` (`party` / `group`) to display each member's current room title (`— <Room Name>`) and `[linkdead]` badge when disconnected during grace.
+  * **In-Game Account Password Change**: Added `save.ChangePassword` and the `password` (alias `passwd`) command so logged-in players on a persistent server can update their account password in-game.
+* **Verification & Documentation**:
+  * Updated `internal/docs/engine/commands.md` and `internal/docs/engine/building.md`.
+  * Added `TestWhisperSameRoomOnly`, `TestShoutReachesRoomAndAdjacentOutdoorRoomsOnly`, `TestRoomPvPFlagControlsPlayerCombat`, and `TestPartyRosterShowsLocationAndLinkdeadAndPasswordChange` in `internal/server/multiplayer_test.go`, plus `TestUDPDiscoveryFindsCustomPortServer` in `internal/net/client_test.go`.
+  * Full test suite passes (`go test -count=1 ./...`).
+* **Review fixes (Nov 10, 2026)**:
+  * `whisper` matches an exact name or id before a substring. An exact link-dead body is refused instead of delivering to a connected name that contains it.
+  * `shout` does not cross a closed or locked exit.
+  * `password` asks for the current and new passwords with echo off (launcher and Telnet). Those lines stay out of the scroll and the input history, and either password may contain spaces. The check runs off the world tick, with a short wait after a failure. A successful change rewrites every local bookmark for that account.
+  * Ability damage fails when its dice expression does not roll, clamps a negative total to 0, uses the combat hit path, and alerts the defender. Script `damage()` refuses another player unless the room is flagged `pvp`.
+  * A failed discovery bind is logged. The beacon answers only loopback and private senders. One process per host owns UDP 4024.
+  * The party test waits until the disconnected session is closed before it reads the roster.
+

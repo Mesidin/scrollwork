@@ -11,6 +11,48 @@ import (
 	"sudengine/internal/world"
 )
 
+func TestUpdateConnectionPasswordsRewritesEveryBookmark(t *testing.T) {
+	origRoot := Root
+	Root = t.TempDir()
+	defer func() { Root = origRoot }()
+
+	entries := []Connection{
+		{Addr: "127.0.0.1:4000", Account: "Ada", Password: "old", Character: "One", Title: "House"},
+		{Addr: "10.0.0.8:4000", Account: "ada", Password: "old", Character: "Two", Title: "House"},
+		{Addr: "127.0.0.1:4000", Account: "Bob", Password: "keep", Character: "Three", Title: "House"},
+	}
+	for _, entry := range entries {
+		if err := SaveConnection(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := UpdateConnectionPasswords("Ada", "new secret"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := LoadConnections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ada, bob int
+	for _, c := range list {
+		switch strings.ToLower(c.Account) {
+		case "ada":
+			ada++
+			if c.Password != "new secret" {
+				t.Fatalf("bookmark %s kept %q", c.Character, c.Password)
+			}
+		case "bob":
+			bob++
+			if c.Password != "keep" {
+				t.Fatalf("bob bookmark changed to %q", c.Password)
+			}
+		}
+	}
+	if ada != 2 || bob != 1 {
+		t.Fatalf("expected 2 ada bookmarks and 1 bob, got %+v", list)
+	}
+}
+
 func TestAccountsBcryptAndMultipleCharacters(t *testing.T) {
 	origRoot := Root
 	Root = t.TempDir()

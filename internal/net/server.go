@@ -96,8 +96,10 @@ func Serve(ctx context.Context, srv *server.Server, ln stdnet.Listener) error {
 }
 
 const (
-	handshakeTimeout = 10 * time.Second
-	frameBodyTimeout = 5 * time.Second
+	handshakeTimeout     = 10 * time.Second
+	frameBodyTimeout     = 5 * time.Second
+	DefaultDiscoveryPort = 4024
+	discoveryRequest     = "sudengine:discover:v1"
 )
 
 func buildServerInfo(srv *server.Server, kind string) ServerInfo {
@@ -126,6 +128,67 @@ func buildServerInfo(srv *server.Server, kind string) ServerInfo {
 		}
 	}
 	return info
+}
+
+// ListenDiscovery opens one UDP socket on every interface at port (default 4024).
+// Broadcast queries need that socket. ServeDiscovery answers only loopback and
+// private senders. A second process on this host cannot share the port and
+// does not beacon.
+func ListenDiscovery(port int) (stdnet.PacketConn, error) {
+	if port <= 0 {
+		port = DefaultDiscoveryPort
+	}
+	return stdnet.ListenPacket("udp4", fmt.Sprintf(":%d", port))
+}
+
+func discoverySourceAllowed(addr stdnet.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	host, _, err := stdnet.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	ip := stdnet.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
+}
+
+// ServeDiscovery responds to UDP discovery datagrams with JSON-encoded ServerInfo
+// containing the TCP port where srv is listening.
+func ServeDiscovery(ctx context.Context, srv *server.Server, pc stdnet.PacketConn, tcpPort int) error {
+	if pc == nil {
+		return nil
+	}
+	defer pc.Close()
+	go func() {
+		<-ctx.Done()
+		_ = pc.Close()
+	}()
+	buf := make([]byte, 512)
+	for {
+		n, raddr, err := pc.ReadFrom(buf)
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, stdnet.ErrClosed) {
+				return nil
+			}
+			continue
+		}
+		if !discoverySourceAllowed(raddr) {
+			continue
+		}
+		if strings.TrimSpace(string(buf[:n])) != discoveryRequest {
+			continue
+		}
+		info := buildServerInfo(srv, "server_info")
+		if tcpPort > 0 {
+			info.Addr = fmt.Sprintf(":%d", tcpPort)
+		}
+		b, err := json.Marshal(info)
+		if err != nil {
+			continue
+		}
+		_, _ = pc.WriteTo(b, raddr)
+	}
 }
 
 func resolveOrCreateAccount(packID, username, password string) (*save.Account, bool, error) {

@@ -347,7 +347,7 @@ func isDirectPlayVerb(line string) bool {
 		return false
 	}
 	switch fields[0] {
-	case "look", "l", "who", "score", "inventory", "i", "inv", "exits", "time", "weather", "sky", "help", "say", "tell", "gossip", "ooc", "quit", "n", "s", "e", "w", "u", "d", "north", "south", "east", "west", "up", "down":
+	case "look", "l", "who", "score", "inventory", "i", "inv", "exits", "time", "weather", "sky", "help", "say", "tell", "whisper", "whis", "shout", "yell", "gossip", "ooc", "quit", "n", "s", "e", "w", "u", "d", "north", "south", "east", "west", "up", "down":
 		return true
 	}
 	return false
@@ -412,6 +412,30 @@ func ServeTelnetConn(ctx context.Context, srv *server.Server, conn stdnet.Conn) 
 		if line == "" {
 			continue
 		}
+		if rest, isPW := passwordVerb(line); isPW {
+			if rest != "" {
+				_, _ = io.WriteString(conn, "Type password and press enter. You will be asked for the current and new passwords.\r\n")
+				continue
+			}
+			if sess.Account == "" {
+				if !srv.Enqueue(sess, "password") {
+					break
+				}
+				continue
+			}
+			oldPass, newPass, alive := readTelnetPasswordChange(conn, tr)
+			if !alive {
+				break
+			}
+			if oldPass == "" || newPass == "" {
+				continue
+			}
+			encoded, err := protocol.EncodePasswordChange(oldPass, newPass)
+			if err != nil || !srv.Enqueue(sess, encoded) {
+				break
+			}
+			continue
+		}
 		if !srv.Enqueue(sess, line) {
 			break
 		}
@@ -425,6 +449,47 @@ func ServeTelnetConn(ctx context.Context, srv *server.Server, conn stdnet.Conn) 
 	waitSessionClosed(srv, sess)
 	signalClose()
 	<-writerDone
+}
+
+func passwordVerb(line string) (rest string, ok bool) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return "", false
+	}
+	switch strings.ToLower(fields[0]) {
+	case "password", "passwd":
+	default:
+		return "", false
+	}
+	return strings.TrimSpace(line[len(fields[0]):]), true
+}
+
+// readTelnetPasswordChange asks for both passwords with local echo off.
+// A false alive means the connection closed. Empty passwords were rejected
+// and already explained to the client.
+func readTelnetPasswordChange(conn stdnet.Conn, tr *TelnetReader) (oldPass, newPass string, alive bool) {
+	_ = SuppressEcho(conn)
+	_, _ = io.WriteString(conn, "Current password: ")
+	oldLine, err := tr.ReadLine()
+	_, _ = io.WriteString(conn, "\r\n")
+	if err != nil {
+		_ = RestoreEcho(conn)
+		return "", "", false
+	}
+	_, _ = io.WriteString(conn, "New password: ")
+	newLine, err := tr.ReadLine()
+	_ = RestoreEcho(conn)
+	_, _ = io.WriteString(conn, "\r\n")
+	if err != nil {
+		return "", "", false
+	}
+	oldPass = strings.TrimSpace(oldLine)
+	newPass = strings.TrimSpace(newLine)
+	if oldPass == "" || newPass == "" {
+		_, _ = io.WriteString(conn, "Password cannot be empty.\r\n")
+		return "", "", true
+	}
+	return oldPass, newPass, true
 }
 
 func telnetLoginOrQuickStart(conn stdnet.Conn, tr *TelnetReader, srv *server.Server, pal *theme.Palette) (server.ConnectMsg, bool) {

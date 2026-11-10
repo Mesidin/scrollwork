@@ -80,6 +80,34 @@ func SaveConnection(entry Connection) error {
 	return writeConnections(out)
 }
 
+// UpdateConnectionPasswords rewrites every saved bookmark for account.
+// A remote server cannot see this file, so the client calls it after a
+// password change succeeds. The password is stored as given, including spaces.
+func UpdateConnectionPasswords(account, password string) error {
+	account = strings.TrimSpace(account)
+	if account == "" || password == "" {
+		return nil
+	}
+	existing, err := LoadConnections()
+	if err != nil || len(existing) == 0 {
+		return err
+	}
+	changed := false
+	now := time.Now().UTC()
+	for i := range existing {
+		if !strings.EqualFold(strings.TrimSpace(existing[i].Account), account) {
+			continue
+		}
+		existing[i].Password = password
+		existing[i].UpdatedAt = now
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return writeConnections(existing)
+}
+
 // RemoveConnection deletes a saved connection matching target from saves/connections.json.
 func RemoveConnection(target Connection) error {
 	existing, err := LoadConnections()

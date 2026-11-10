@@ -151,6 +151,14 @@ func run(args []string) error {
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
+		if discPC, dErr := snet.ListenDiscovery(snet.DefaultDiscoveryPort); dErr != nil {
+			fmt.Fprintf(os.Stderr, "discovery listen :%d: %v\n", snet.DefaultDiscoveryPort, dErr)
+		} else {
+			defer discPC.Close()
+			go func() {
+				_ = snet.ServeDiscovery(ctx, srv, discPC, port)
+			}()
+		}
 		if telnetLn != nil {
 			go func() {
 				_ = snet.ServeTelnet(ctx, srv, telnetLn)

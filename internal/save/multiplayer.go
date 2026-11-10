@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -220,6 +221,28 @@ func AuthenticateAccount(packID, username, password string) (*Account, error) {
 		return nil, ErrInvalidCredentials
 	}
 	return acc, nil
+}
+
+// accountWriteMu keeps a password replace from overlapping another replace
+// of the same account file. Login reads stay outside the lock.
+var accountWriteMu sync.Mutex
+
+func ChangePassword(packID, username, oldPass, newPass string) error {
+	if strings.TrimSpace(newPass) == "" {
+		return fmt.Errorf("new password cannot be empty")
+	}
+	accountWriteMu.Lock()
+	defer accountWriteMu.Unlock()
+	acc, err := AuthenticateAccount(packID, username, oldPass)
+	if err != nil {
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPass), BcryptCost)
+	if err != nil {
+		return err
+	}
+	acc.PasswordHash = string(hash)
+	return SaveAccount(packID, acc)
 }
 
 func AddCharacterToAccount(packID, username, charName string) error {

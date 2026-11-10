@@ -225,10 +225,24 @@ func DiscoverServers(ctx context.Context, port int) []ServerInfo {
 	var (
 		mu      sync.Mutex
 		found   []ServerInfo
+		seen    = map[string]bool{}
 		wg      sync.WaitGroup
 		sem     = make(chan struct{}, 64)
 		timeout = 180 * time.Millisecond
 	)
+
+	addFound := func(info ServerInfo) {
+		if info.Addr == "" {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if seen[info.Addr] {
+			return
+		}
+		seen[info.Addr] = true
+		found = append(found, info)
+	}
 
 	probeOne := func(target string) {
 		defer wg.Done()
@@ -263,10 +277,16 @@ func DiscoverServers(ctx context.Context, port int) []ServerInfo {
 			return
 		}
 		info.Addr = target
-		mu.Lock()
-		found = append(found, info)
-		mu.Unlock()
+		addFound(info)
 	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for _, info := range discoverUDP(ctx, DefaultDiscoveryPort, selfIPs, timeout) {
+			addFound(info)
+		}
+	}()
 
 	for _, c := range candidates {
 		wg.Add(1)
@@ -281,6 +301,84 @@ func DiscoverServers(ctx context.Context, port int) []ServerInfo {
 		return found[i].Addr < found[j].Addr
 	})
 	return found
+}
+
+// DiscoverUDP queries a UDP discovery port on 127.0.0.1 and local /24 broadcast addresses.
+func DiscoverUDP(ctx context.Context, discoveryPort int, timeout time.Duration) []ServerInfo {
+	if timeout <= 0 {
+		timeout = 180 * time.Millisecond
+	}
+	return discoverUDP(ctx, discoveryPort, LocalLANIPs(), timeout)
+}
+
+func discoverUDP(ctx context.Context, discoveryPort int, selfIPs []string, timeout time.Duration) []ServerInfo {
+	if discoveryPort <= 0 {
+		discoveryPort = DefaultDiscoveryPort
+	}
+	pc, err := stdnet.ListenPacket("udp4", ":0")
+	if err != nil {
+		return nil
+	}
+	defer pc.Close()
+	_ = pc.SetDeadline(time.Now().Add(timeout))
+
+	targets := []*stdnet.UDPAddr{
+		{IP: stdnet.IPv4(127, 0, 0, 1), Port: discoveryPort},
+		{IP: stdnet.IPv4bcast, Port: discoveryPort},
+	}
+	seenSubnets := map[string]bool{}
+	for _, ipStr := range selfIPs {
+		ip := stdnet.ParseIP(ipStr).To4()
+		if ip == nil {
+			continue
+		}
+		prefix := fmt.Sprintf("%d.%d.%d.", ip[0], ip[1], ip[2])
+		if seenSubnets[prefix] {
+			continue
+		}
+		seenSubnets[prefix] = true
+		targets = append(targets, &stdnet.UDPAddr{
+			IP:   stdnet.IPv4(ip[0], ip[1], ip[2], 255),
+			Port: discoveryPort,
+		})
+	}
+
+	req := []byte(discoveryRequest)
+	for _, t := range targets {
+		_, _ = pc.WriteTo(req, t)
+	}
+
+	var out []ServerInfo
+	seen := map[string]bool{}
+	buf := make([]byte, 2048)
+	for {
+		if ctx != nil && ctx.Err() != nil {
+			break
+		}
+		n, raddr, err := pc.ReadFrom(buf)
+		if err != nil {
+			break
+		}
+		var info ServerInfo
+		if err := json.Unmarshal(buf[:n], &info); err != nil || info.Type != "server_info" {
+			continue
+		}
+		uaddr, ok := raddr.(*stdnet.UDPAddr)
+		if !ok || uaddr.IP == nil {
+			continue
+		}
+		host := uaddr.IP.String()
+		_, portStr, err := stdnet.SplitHostPort(info.Addr)
+		if err != nil || portStr == "" {
+			portStr = "4000"
+		}
+		info.Addr = stdnet.JoinHostPort(host, portStr)
+		if !seen[info.Addr] {
+			seen[info.Addr] = true
+			out = append(out, info)
+		}
+	}
+	return out
 }
 
 // Dial connects to a remote sudengine server over TCP using the framed protocol,
